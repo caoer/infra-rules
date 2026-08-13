@@ -1,3 +1,5 @@
 node_modules/
 *.local.json
 dist/
+test/.tmp/
+node_modules/
