@@ -29,7 +29,20 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { cidrContainsIp } from "../src/lib/cidr.ts";
 
-const fixturesDir = join(import.meta.dir, "..", "fixtures");
+/**
+ * Scan roots: every directory that holds committed DATA files.
+ *
+ * `test/golden/` is in scope because a golden is fixture data that happens to
+ * live under `test/` — U7 found it sitting outside the scan. The rest of
+ * `test/` and all of `src/` stay out on purpose: they carry prose about the
+ * fleet (a comment explaining why `10.96.0.0/14` sits inside `10.88.0.0/12`
+ * is documentation, not a leak), so scanning them would train people to
+ * weaken the rules. Data directories only, and no exceptions inside them.
+ */
+const SCAN_ROOTS = [
+  join(import.meta.dir, "..", "fixtures"),
+  join(import.meta.dir, "golden"),
+];
 
 interface Leak {
   file: string;
@@ -71,8 +84,18 @@ function isRealIpv4(token: string): boolean {
 function listFixtureFiles(dir: string): string[] {
   return readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
-    .map((entry) => relative(fixturesDir, join(entry.parentPath, entry.name)))
+    .map((entry) => relative(dir, join(entry.parentPath, entry.name)))
     .sort();
+}
+
+/** Every data file across every scan root, labelled by the root it came from. */
+function scannedFiles(): Array<{ label: string; path: string }> {
+  return SCAN_ROOTS.flatMap((root) =>
+    listFixtureFiles(root).map((file) => ({
+      label: `${relative(join(import.meta.dir, ".."), root)}/${file}`,
+      path: join(root, file),
+    })),
+  );
 }
 
 function scanLine(file: string, line: string, lineNo: number, leaks: Leak[]): void {
@@ -111,23 +134,26 @@ function scanLine(file: string, line: string, lineNo: number, leaks: Leak[]): vo
 
 function scanFixtures(): Leak[] {
   const leaks: Leak[] = [];
-  for (const file of listFixtureFiles(fixturesDir)) {
-    const text = readFileSync(join(fixturesDir, file), "utf8");
-    text.split("\n").forEach((line, i) => scanLine(file, line, i + 1, leaks));
+  for (const { label, path } of scannedFiles()) {
+    const text = readFileSync(path, "utf8");
+    text.split("\n").forEach((line, i) => scanLine(label, line, i + 1, leaks));
   }
   return leaks;
 }
 
-describe("leak guard — fixtures/ carries no real fleet data", () => {
-  test("no live fleet CIDR, no real password, no public IP anywhere under fixtures/", () => {
+describe("leak guard — committed data carries no real fleet data", () => {
+  test("no live fleet CIDR, no real password, no public IP in any scanned data file", () => {
     const leaks = scanFixtures().map(
       (leak) => `${leak.file}:${leak.line} [${leak.rule}] ${leak.match}`,
     );
     expect(leaks).toEqual([]);
   });
 
-  test("the scan sees the fixture tree (guards against a silently-empty scan)", () => {
-    expect(listFixtureFiles(fixturesDir).length).toBeGreaterThanOrEqual(13);
+  test("the scan sees every root (guards against a silently-empty scan)", () => {
+    expect(scannedFiles().length).toBeGreaterThanOrEqual(13);
+    for (const root of SCAN_ROOTS) {
+      expect(listFixtureFiles(root).length).toBeGreaterThan(0);
+    }
   });
 
   // The rules themselves are tested here against inline samples, so a
