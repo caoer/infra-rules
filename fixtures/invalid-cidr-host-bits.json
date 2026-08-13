@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [{ "kind": "network", "name": "lan-x", "cidr": "10.99.1.0/22" }]
+}
