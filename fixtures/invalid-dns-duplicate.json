@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    { "kind": "host", "name": "web-1" },
+    { "kind": "service", "name": "grafana", "dnsName": "grafana.acme.test", "host": "web-1" },
+    { "kind": "service", "name": "metrics", "dnsName": "grafana.acme.test", "host": "web-1" }
+  ]
+}
