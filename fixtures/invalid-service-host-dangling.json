@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    { "kind": "service", "name": "grafana", "dnsName": "grafana.acme.test", "host": "ghost" }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    { "kind": "policy", "name": "direct" },
+    { "kind": "policy", "name": "direct" }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {
+    "acme": [
+      { "kind": "mesh", "name": "mesh-a", "cidr": "10.20.0.0/14" },
+      { "kind": "network", "name": "lan-alpha", "cidr": "192.0.2.0/24" },
+      {
+        "kind": "host",
+        "name": "web-1",
+        "mesh": "mesh-a",
+        "easytier_ip": "10.99.0.5",
+        "networks": { "lan-alpha": { "ip": "198.51.100.9" } }
+      }
+    ]
+  },
+  "hand": []
+}

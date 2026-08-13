@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    {
+      "kind": "host",
+      "name": "web-1",
+      "mesh": "ghost-mesh",
+      "easytier_ip": "10.20.1.7",
+      "networks": { "ghost-lan": { "ip": "192.0.2.10" } }
+    }
+  ]
+}
