@@ -6,11 +6,11 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
 import { RegistrySchema, type Registry } from "../schema/registry.ts";
 import { canonicalJson, stampHeader } from "../lib/canonical.ts";
-import { writeAllOrNothing, type FileSet } from "../lib/atomic-write.ts";
+import { writeAllOrNothing, writeFileAtomic, type FileSet } from "../lib/atomic-write.ts";
 import { renderers as registeredRenderers, type Renderer } from "../render/index.ts";
 
 export async function loadRegistry(path: string): Promise<Registry> {
@@ -56,6 +56,17 @@ export interface RenderOptions {
   registryPath: string;
   outDir: string;
   renderers?: Renderer[];
+  /**
+   * Where to write the produced-set listing: one path per line, relative to
+   * `outDir`, sorted. `"-"` means stdout.
+   *
+   * Consumers commit rendered artifacts, so a view removed from the registry
+   * leaves its already-committed file tracked, unmodified and stale —
+   * `git status` says nothing. This listing is the authority a regen recipe
+   * diffs its output directory against, instead of maintaining an
+   * expected-outputs list that drifts from the renderers.
+   */
+  producedListPath?: string;
 }
 
 /** Exit code per D18: 0 rendered, 2 failed. */
@@ -63,6 +74,21 @@ export async function runRender(options: RenderOptions): Promise<number> {
   const registry = await loadRegistry(options.registryPath);
   const files = buildFileSet(registry, options.outDir, options.renderers);
   await writeAllOrNothing(files);
-  console.log(`rendered ${files.size} file(s) to ${options.outDir}`);
+
+  if (options.producedListPath !== undefined) {
+    const listing = producedList(files, options.outDir);
+    if (options.producedListPath === "-") console.log(listing);
+    else await writeFileAtomic(options.producedListPath, `${listing}\n`);
+  }
+
+  console.error(`rendered ${files.size} file(s) to ${options.outDir}`);
   return 0;
+}
+
+/** The produced set as relative, forward-slashed, sorted paths. */
+export function producedList(files: FileSet, outDir: string): string {
+  return [...files.keys()]
+    .map((path) => relative(outDir, path).split(sep).join("/"))
+    .sort()
+    .join("\n");
 }

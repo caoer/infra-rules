@@ -17,7 +17,10 @@ import { runRender } from "./commands/render.ts";
 const USAGE = `usage: infra-rules <command> [options]
 
 commands:
-  render --registry <file> --out <dir>   write artifacts (exit 0 ok, 2 failed)
+  render --registry <file> --out <dir> [--produced <file>|-]
+                                         write artifacts (exit 0 ok, 2 failed);
+                                         --produced lists what was written, one
+                                         relative path per line, "-" for stdout
   diff   --registry <file> --out <dir>   compare artifacts (exit 0 same, 1 differ, 2 failed)
 `;
 
@@ -31,7 +34,11 @@ function required(flags: Map<string, string>, name: string): string {
 
 const COMMANDS: Record<string, Handler> = {
   render: (flags) =>
-    runRender({ registryPath: required(flags, "registry"), outDir: required(flags, "out") }),
+    runRender({
+      registryPath: required(flags, "registry"),
+      outDir: required(flags, "out"),
+      producedListPath: flags.get("produced"),
+    }),
   diff: (flags) =>
     runDiff({ registryPath: required(flags, "registry"), outDir: required(flags, "out") }),
 };
