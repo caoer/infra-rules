@@ -29,13 +29,21 @@ describe("HostSchema", () => {
     expect(HostSchema.safeParse({ ...base, roles: ["exit"], region: "fra" }).success).toBe(true);
   });
 
-  test("region rejected on a host that is neither jumper nor exit", () => {
-    const result = HostSchema.safeParse({ ...base, region: "syd" });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.issues.some((i) => i.path[0] === "region")).toBe(true);
-    }
-    expect(HostSchema.safeParse({ ...base, roles: ["gateway"], region: "syd" }).success).toBe(false);
+  /**
+   * region was originally gated to jumper/exit roles. The the inventory repo inventory
+   * disproves that: ordinary bare-metal hosts carry region = "east-1"/"west-1"/
+   * "east-2"/"north-1" with no roles field at all. The gate made the live client
+   * profile's region-grouped host pins underivable — the data existed and
+   * the schema refused it.
+   */
+  test("region is a proximity label and is accepted on ANY host", () => {
+    expect(HostSchema.safeParse({ ...base, region: "east-1" }).success).toBe(true);
+    expect(HostSchema.safeParse({ ...base, roles: ["gateway"], region: "west-1" }).success).toBe(true);
+  });
+
+  test("source records which export path produced the entity", () => {
+    expect(HostSchema.safeParse({ ...base, source: "ssh-inventory" }).success).toBe(true);
+    expect(HostSchema.safeParse({ ...base, source: "" }).success).toBe(false);
   });
 
   test("unknown keys rejected (strict — field drift fails loud)", () => {

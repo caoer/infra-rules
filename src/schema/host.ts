@@ -10,7 +10,21 @@ import { z } from "zod";
  * - `networks` — LAN membership: network name → the host's address on it.
  *   A host absent from a network simply has no entry for it.
  *
- * `region` exists only on jumper/exit hosts — enforced here, not in prose.
+ * `region` is a PROXIMITY LABEL and may appear on ANY host.
+ *
+ * It was originally gated to jumper/exit roles, from a carried finding that
+ * observed region on jumper data and read that as a rule. The the inventory repo
+ * inventory disproves it: ordinary bare-metal hosts carry `region = "east-1"`,
+ * `"west-1"`, `"east-2"`, `"north-1"` beside `location`, with no roles field at all
+ * (the inventory's bare-metal group). The gate made the live client
+ * profile's region-grouped host pins underivable from the registry — the
+ * data existed and the schema refused it.
+ *
+ * `source` records WHICH exporter path produced a snapshot entity, so a
+ * renderer reproducing an existing artifact byte-for-byte can select the
+ * same host set its predecessor saw. Without it, an entity present only in a
+ * broader export silently adds output lines to a file whose value is being
+ * byte-diffed.
  */
 export const HostSchema = z
   .strictObject({
@@ -23,22 +37,15 @@ export const HostSchema = z
     mesh: z.string().min(1).optional(),
     easytier_ip: z.ipv4().optional(),
     networks: z.record(z.string().min(1), z.strictObject({ ip: z.ipv4() })).optional(),
+    /** Proximity label (e.g. "east-1", "west-1"). Any host may carry one. */
     region: z.string().min(1).optional(),
+    /** Producing export path, e.g. "ssh-inventory" or "mesh-overlay".
+     * Set by data exporters; absent on hand entities. */
+    source: z.string().min(1).optional(),
     /** Source-fidelity fields (the org vocabulary); no v1 renderer reads them. */
     site: z.string().optional(),
     hypervisor: z.string().optional(),
     resources: z.unknown().optional(),
-  })
-  .superRefine((host, ctx) => {
-    if (host.region === undefined) return;
-    const roles = host.roles ?? [];
-    if (!roles.includes("jumper") && !roles.includes("exit")) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["region"],
-        message: `host "${host.name}": region exists only on jumper/exit hosts`,
-      });
-    }
   });
 
 export type Host = z.infer<typeof HostSchema>;
