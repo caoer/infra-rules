@@ -91,3 +91,44 @@ describe("render and diff round trip", () => {
     expect(await runDiff(options)).toBe(1);
   });
 });
+
+/**
+ * `--produced` exists for the consuming repos' regen recipes. Rendered
+ * artifacts are COMMITTED there, so an entity removed from the registry
+ * leaves its already-committed file tracked, unmodified and stale — nothing
+ * in `git status` says so. The recipe diffs this listing against the output
+ * directory to spot the orphan, instead of maintaining its own expected-
+ * outputs list that would drift from the renderers.
+ */
+describe("render --produced (stale-artifact detection for consumers)", () => {
+  test("stdout carries only the produced paths, so a recipe can read it directly", async () => {
+    const proc = Bun.spawn(
+      ["bun", CLI, "render", "--registry", registryPath, "--out", outDir, "--produced", "-"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const stdout = (await new Response(proc.stdout).text()).trim();
+    expect(await proc.exited).toBe(0);
+    // Every line is a real relative path — no summary line mixed into stdout.
+    const lines = stdout.split("\n");
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line).not.toContain("rendered ");
+      expect(await Bun.file(join(outDir, line)).exists()).toBe(true);
+    }
+    // The human summary is still emitted, on stderr.
+    expect(await new Response(proc.stderr).text()).toContain("rendered ");
+  });
+
+  test("the listing names exactly the files on disk, so an orphan is detectable", async () => {
+    await runRender({ registryPath, outDir, renderers: [hostsRenderer], producedListPath: join(dir, "produced.txt") });
+    const produced = (await Bun.file(join(dir, "produced.txt")).text()).trim().split("\n");
+    expect(produced).toEqual(["hosts.json"]);
+
+    // A file a previous render committed, no longer produced: on disk, absent
+    // from the listing. That difference is the whole detection mechanism.
+    await writeFile(join(outDir, "stale.json"), "{}");
+    const onDisk = [...new Bun.Glob("*.json").scanSync(outDir)].sort();
+    expect(onDisk).toEqual(["hosts.json", "stale.json"]);
+    expect(onDisk.filter((f) => !produced.includes(f))).toEqual(["stale.json"]);
+  });
+});
