@@ -2,7 +2,6 @@
   "name": "infra-rules",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"
@@ -17,5 +16,12 @@
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "typescript": "^7.0.2"
-  }
+  },
+  "bin": {
+    "infra-rules": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ]
 }

@@ -13,15 +13,21 @@
 
 import { runDiff } from "./commands/diff.ts";
 import { runRender } from "./commands/render.ts";
+import { runValidate } from "./commands/validate.ts";
 
 const USAGE = `usage: infra-rules <command> [options]
 
 commands:
-  render --registry <file> --out <dir> [--produced <file>|-]
+  validate <registry.json>               report every violation
+                                         (exit 0 valid, 1 violations, 2 usage)
+  render --registry <file> --out <dir> [--produced <file>|-] [--views a,b]
                                          write artifacts (exit 0 ok, 2 failed);
                                          --produced lists what was written, one
-                                         relative path per line, "-" for stdout
-  diff   --registry <file> --out <dir>   compare artifacts (exit 0 same, 1 differ, 2 failed)
+                                         relative path per line, "-" for stdout;
+                                         --views limits output to those views —
+                                         REQUIRED when --out is a per-org repo
+  diff   --registry <file> --out <dir> [--views a,b]
+                                         compare artifacts (0 same, 1 differ, 2 failed)
 `;
 
 type Handler = (flags: Map<string, string>) => Promise<number>;
@@ -32,16 +38,41 @@ function required(flags: Map<string, string>, name: string): string {
   return value;
 }
 
+/**
+ * `validate` takes a positional file (`validate registry.json`) because that
+ * is how the consuming publish gates invoke it, and also accepts
+ * `--registry <file>` for symmetry with the other commands.
+ */
+function validateArgs(rest: string[]): string[] {
+  if (rest.length > 0 && !rest[0]!.startsWith("--")) return rest;
+  const flags = parseFlags(rest);
+  return [required(flags, "registry")];
+}
+
 const COMMANDS: Record<string, Handler> = {
   render: (flags) =>
     runRender({
       registryPath: required(flags, "registry"),
       outDir: required(flags, "out"),
       producedListPath: flags.get("produced"),
+      views: viewList(flags),
     }),
   diff: (flags) =>
-    runDiff({ registryPath: required(flags, "registry"), outDir: required(flags, "out") }),
+    runDiff({
+      registryPath: required(flags, "registry"),
+      outDir: required(flags, "out"),
+      views: viewList(flags),
+    }),
 };
+
+/** `--views a,b` → ["a","b"]; absent → undefined (render every view). */
+function viewList(flags: Map<string, string>): string[] | undefined {
+  const raw = flags.get("views");
+  if (raw === undefined) return undefined;
+  const views = raw.split(",").map((v) => v.trim()).filter((v) => v !== "");
+  if (views.length === 0) throw new Error("--views needs at least one view name");
+  return views;
+}
 
 /** `--key value` and `--key=value`; unknown flags are an error, not a silent no-op. */
 function parseFlags(argv: string[]): Map<string, string> {
@@ -66,6 +97,14 @@ export async function main(argv: string[]): Promise<number> {
   if (command === undefined || command === "--help" || command === "-h") {
     console.log(USAGE);
     return command === undefined ? 2 : 0;
+  }
+  if (command === "validate") {
+    try {
+      return runValidate(validateArgs(rest));
+    } catch (err) {
+      console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+      return 2;
+    }
   }
   const handler = COMMANDS[command];
   if (handler === undefined) {
