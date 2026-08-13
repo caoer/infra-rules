@@ -60,3 +60,4 @@ export function resetRenderers(): void {
 }
 
 // ── REGISTRATIONS ── one `import "./<file>.ts";` line per renderer, alphabetical.
+import "./records.ts";
