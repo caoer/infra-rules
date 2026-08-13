@@ -118,29 +118,49 @@ export interface MetricsPipeline {
 }
 
 /**
- * Query VM back for this vantage's heartbeat series.
+ * Query VM back for this vantage's heartbeat series, retrying past VM's
+ * search latency offset.
  *
- * The reason this exists: a push can be accepted, counted, and still stored
- * as nothing. `delivered=true` is a statement about the POST, not about the
- * database — so the only honest proof of ingest is asking VM whether the
- * series is there. Returns false on any failure, including an unreachable
- * VM: this reports "not proven", never "fine".
+ * Why this exists: a push can be accepted, counted, and still stored as
+ * nothing. `delivered=true` is a statement about the POST, not about the
+ * database, so the only honest proof of ingest is asking VM whether the
+ * series is there.
+ *
+ * Why it RETRIES: VM applies `-search.latencyOffset` (30s by default), so a
+ * just-delivered sample is not yet visible to an instant query even though
+ * it is stored — `/api/v1/export` shows it while `/api/v1/query` does not.
+ * Checking once would report failure on every healthy start, and a warning
+ * that fires on every clean start is one operators learn to ignore. That
+ * would convert this check into exactly the silence it exists to break.
+ *
+ * Returns false only after every attempt has failed, including an
+ * unreachable VM: this reports "not proven", never "fine".
  */
+export const DEFAULT_INGEST_RETRY_MS: readonly number[] = [5_000, 15_000, 20_000];
+
 export async function verifyIngest(
   vmBaseUrl: string,
   labels: { vantage: string; view: string },
-  timeoutMs = 5_000,
+  options: { timeoutMs?: number; retryMs?: readonly number[] } = {},
 ): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const retryMs = options.retryMs ?? DEFAULT_INGEST_RETRY_MS;
   const query = `infra_probe_last_run_timestamp_seconds{vantage=${JSON.stringify(labels.vantage)},view=${JSON.stringify(labels.view)}}`;
   const url = `${vmBaseUrl.replace(/\/+$/, "")}/api/v1/query?query=${encodeURIComponent(query)}`;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!response.ok) return false;
-    const body = (await response.json()) as { data?: { result?: unknown[] } };
-    return (body.data?.result?.length ?? 0) > 0;
-  } catch {
-    return false;
+
+  for (let attempt = 0; attempt <= retryMs.length; attempt++) {
+    if (attempt > 0) await Bun.sleep(retryMs[attempt - 1]!);
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (response.ok) {
+        const body = (await response.json()) as { data?: { result?: unknown[] } };
+        if ((body.data?.result?.length ?? 0) > 0) return true;
+      }
+    } catch {
+      // fall through to the next attempt
+    }
   }
+  return false;
 }
 
 export function createMetricsPipeline(options: PipelineOptions): MetricsPipeline {

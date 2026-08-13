@@ -157,14 +157,18 @@ export async function main(): Promise<never> {
       // failure here means the metrics nobody is watching are not there.
       if (report.delivered && !ingestVerified) {
         ingestVerified = true;
-        const present = await verifyIngest(config.vmBaseUrl, config);
-        console.error(
-          present
-            ? `[probe] ingest verified: series queryable at ${config.vmBaseUrl}`
-            : `[probe] WARNING ingest NOT verified — pushes report success but ` +
-                `infra_probe_last_run_timestamp_seconds{vantage="${config.vantage}"} ` +
-                `is not queryable at ${config.vmBaseUrl}. Metrics are being dropped.`,
-        );
+        // Detached: verifyIngest retries past VM's search latency offset
+        // (~30s), and probing must not stall waiting for it.
+        void verifyIngest(config.vmBaseUrl, config).then((present) => {
+          console.error(
+            present
+              ? `[probe] ingest verified: series queryable at ${config.vmBaseUrl}`
+              : `[probe] WARNING ingest NOT verified — pushes report success but ` +
+                  `infra_probe_last_run_timestamp_seconds{vantage="${config.vantage}"} ` +
+                  `is not queryable at ${config.vmBaseUrl} after retrying past the ` +
+                  `search latency offset. Metrics are being dropped.`,
+          );
+        });
       }
     } catch (error) {
       console.error(`[probe] cycle skipped (no heartbeat): ${message(error)}`);

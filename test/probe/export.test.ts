@@ -16,6 +16,7 @@ import {
   createMetricsPipeline,
   sampleTimestampsSeconds,
   verifyIngest,
+  DEFAULT_INGEST_RETRY_MS,
   type MetricsPipeline,
 } from "../../src/probe/export.ts";
 import type { CheckOutcome } from "../../src/probe/checks.ts";
@@ -219,6 +220,39 @@ describe("sample timestamps — the samples must be STORABLE, not just accepted"
 });
 
 describe("verifyIngest — delivered is not ingested", () => {
+  /**
+   * The retry exists because VM's -search.latencyOffset (30s default) hides a
+   * just-delivered sample from instant queries while it is already stored.
+   * Checking once warned on EVERY healthy start on both fleets — and a check
+   * that cries wolf is one operators mute, which is the silence this whole
+   * mechanism exists to break.
+   */
+  test("retries past the search latency offset before concluding failure", async () => {
+    let call = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        call++;
+        // Empty like VM inside its latency offset, then the series appears.
+        const result = call >= 3 ? [{ metric: {}, value: [0, "1"] }] : [];
+        return new Response(JSON.stringify({ data: { result } }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const url = `http://127.0.0.1:${server.port}`;
+    expect(
+      await verifyIngest(url, { vantage: "edge-1", view: "vpn" }, { retryMs: [5, 5, 5] }),
+    ).toBe(true);
+    expect(call).toBe(3); // it did not give up on the first empty answer
+    server.stop(true);
+  });
+
+  test("the default retry schedule outlasts VM's 30s latency offset", () => {
+    const total = DEFAULT_INGEST_RETRY_MS.reduce((a, b) => a + b, 0);
+    expect(total).toBeGreaterThan(30_000);
+  });
+
   test("true only when VM actually returns the series", async () => {
     const server = Bun.serve({
       port: 0,
@@ -241,7 +275,7 @@ describe("verifyIngest — delivered is not ingested", () => {
         }),
     });
     const url = `http://127.0.0.1:${server.port}`;
-    expect(await verifyIngest(url, { vantage: "edge-1", view: "vpn" })).toBe(false);
+    expect(await verifyIngest(url, { vantage: "edge-1", view: "vpn" }, { retryMs: [] })).toBe(false);
     server.stop(true);
   });
 
@@ -249,6 +283,6 @@ describe("verifyIngest — delivered is not ingested", () => {
     const server = Bun.serve({ port: 0, fetch: () => new Response("x") });
     const url = `http://127.0.0.1:${server.port}`;
     server.stop(true);
-    expect(await verifyIngest(url, { vantage: "v", view: "w" }, 500)).toBe(false);
+    expect(await verifyIngest(url, { vantage: "v", view: "w" }, { timeoutMs: 500, retryMs: [] })).toBe(false);
   });
 });
