@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    { "kind": "network", "name": "old-lan", "cidr": "10.144.144.0/24" },
+    { "kind": "host", "name": "relic", "easytier_ip": "10.146.200.5" },
+    { "kind": "policy", "name": "direct" },
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "dead-route",
+      "match": { "match": "cidr", "cidr": "10.146.192.0/20" },
+      "policy": "direct",
+      "priority": 50
+    }
+  ]
+}

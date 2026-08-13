@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "band-x",
+      "match": { "match": "cidr", "cidr": "10.99.0.0/16" },
+      "policy": "ghost-policy",
+      "priority": 10
+    }
+  ]
+}

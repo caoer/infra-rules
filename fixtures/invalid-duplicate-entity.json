@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {
+    "acme": [{ "kind": "host", "name": "web-1", "easytier_ip": "10.20.1.7" }]
+  },
+  "hand": [{ "kind": "host", "name": "web-1", "easytier_ip": "10.20.1.9" }]
+}
