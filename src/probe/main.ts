@@ -22,7 +22,7 @@
 import { readFile } from "node:fs/promises";
 import { ProbeManifestSchema, type ProbeCheck } from "../schema/probe.ts";
 import { buildResolver, runCheck, type CheckOutcome } from "./checks.ts";
-import { createMetricsPipeline } from "./export.ts";
+import { createMetricsPipeline, verifyIngest } from "./export.ts";
 
 const REQUIRED_ENV = ["PROBE_MANIFEST", "PROBE_VANTAGE", "PROBE_VIEW", "PROBE_VM_URL"] as const;
 const DEFAULT_INTERVAL_SECONDS = 60;
@@ -130,6 +130,8 @@ export async function main(): Promise<never> {
       `manifest=${config.manifestPath} vm=${config.vmBaseUrl} interval=${config.intervalSeconds}s`,
   );
 
+  let ingestVerified = false;
+
   while (true) {
     const cycleStarted = Date.now();
     try {
@@ -146,6 +148,24 @@ export async function main(): Promise<never> {
         `[probe] cycle: ${outcomes.length} checks, ${outcomes.length - failed.length} ok, ` +
           `${failed.length} failed; delivered=${report.delivered} attempts=${report.attempts}`,
       );
+
+      // Delivered is not ingested. A push can be accepted, counted, and
+      // stored as nothing (VM drops samples whose timestamps it rejects) —
+      // every in-process signal still says success. So after the first
+      // delivered cycle, ask VM whether the series actually exists. Once,
+      // not every cycle: this is a deployment-correctness check, and a
+      // failure here means the metrics nobody is watching are not there.
+      if (report.delivered && !ingestVerified) {
+        ingestVerified = true;
+        const present = await verifyIngest(config.vmBaseUrl, config);
+        console.error(
+          present
+            ? `[probe] ingest verified: series queryable at ${config.vmBaseUrl}`
+            : `[probe] WARNING ingest NOT verified — pushes report success but ` +
+                `infra_probe_last_run_timestamp_seconds{vantage="${config.vantage}"} ` +
+                `is not queryable at ${config.vmBaseUrl}. Metrics are being dropped.`,
+        );
+      }
     } catch (error) {
       console.error(`[probe] cycle skipped (no heartbeat): ${message(error)}`);
     }

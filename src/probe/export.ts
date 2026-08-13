@@ -8,12 +8,19 @@
  *
  * How the D8 contract lands here:
  *
- * - NO CLIENT SAMPLE TIMESTAMPS: every data point's start/end time is zeroed
- *   before serialization (`stripClientTimestamps`), so VM assigns arrival
- *   time server-side — clock-skew immunity. The heartbeat's VALUE is a client
- *   clock reading (that is what the metric name promises); the SAMPLE
- *   timestamp is what stays server-assigned. U11 verifies the zero-timestamp
- *   behavior against a real VM with a real push.
+ * - REAL SAMPLE TIMESTAMPS, and D8's clock-skew intent is still met.
+ *   This unit first zeroed every sample timestamp so VM would assign arrival
+ *   time server-side. Real VictoriaMetrics DISCARDS those samples at storage
+ *   (`vm_rows_ignored_total{reason="small_timestamp"}`) — verified on VM
+ *   1.148.0 and 1.145.0, 21 of 22 rows dropped, `infra_probe_success` never
+ *   queryable. Nothing inside the exporter could see it: the POST returns
+ *   2xx, the SDK reports SUCCESS, and VM counts the rows as inserted before
+ *   dropping them. DELIVERED IS NOT INGESTED — only a query-back proves
+ *   ingest, which is why `verifyIngest` exists below.
+ *
+ *   So samples now carry their real collection time. The heartbeat's VALUE
+ *   stays a client clock reading (that is what the metric name promises), and
+ *   skew protection moves to query time where VM can actually provide it.
  *
  * - DELTA temporality: a sync gauge under delta collection exports only the
  *   attribute sets recorded since the last collect, so a service that leaves
@@ -44,31 +51,33 @@ const VM_OTLP_PATH = "/opentelemetry/v1/metrics";
 const DEFAULT_RETRY_BACKOFF_MS: readonly number[] = [1_000, 5_000];
 const DEFAULT_EXPORT_TIMEOUT_MS = 10_000;
 
-/** Zero every data point's timestamps in place, so the wire carries
- * `timeUnixNano = 0` and VM assigns arrival time server-side (D8). The
- * fields are typed readonly by the SDK; the collected snapshot is ours to
- * mutate before serialization. */
-export function stripClientTimestamps(metrics: ResourceMetrics): void {
-  const zero: HrTime = [0, 0];
+/**
+ * Every data point's sample timestamp, as seconds since the epoch.
+ *
+ * Exists so a test can assert the wire carries REAL times: a zero (or
+ * otherwise ancient) timestamp is silently discarded by VictoriaMetrics at
+ * storage while every signal inside this process still reports success.
+ */
+export function sampleTimestampsSeconds(metrics: ResourceMetrics): number[] {
+  const seconds: number[] = [];
   for (const scope of metrics.scopeMetrics) {
     for (const metric of scope.metrics) {
       for (const point of metric.dataPoints) {
-        const mutable = point as { startTime: HrTime; endTime: HrTime };
-        mutable.startTime = zero;
-        mutable.endTime = zero;
+        const [s, ns] = point.endTime as HrTime;
+        seconds.push(s + ns / 1e9);
       }
     }
   }
+  return seconds;
 }
 
-/** The proto exporter, with timestamps stripped on the way out and the last
- * export result captured where the retry loop can read it — the SDK's own
- * flush surface does not report per-export success reliably. */
+/** The proto exporter, with the last export result captured where the retry
+ * loop can read it — the SDK's own flush surface does not report per-export
+ * success reliably. */
 class VmMetricExporter extends OTLPMetricExporter {
   private lastResult: ExportResult | undefined;
 
   override export(metrics: ResourceMetrics, resultCallback: (result: ExportResult) => void): void {
-    stripClientTimestamps(metrics);
     super.export(metrics, (result) => {
       this.lastResult = result;
       resultCallback(result);
@@ -106,6 +115,32 @@ export interface MetricsPipeline {
   pushCycle(outcomes: CheckOutcome[]): Promise<PushReport>;
   /** Flush-and-stop for tests; the production loop never calls it. */
   shutdown(): Promise<void>;
+}
+
+/**
+ * Query VM back for this vantage's heartbeat series.
+ *
+ * The reason this exists: a push can be accepted, counted, and still stored
+ * as nothing. `delivered=true` is a statement about the POST, not about the
+ * database — so the only honest proof of ingest is asking VM whether the
+ * series is there. Returns false on any failure, including an unreachable
+ * VM: this reports "not proven", never "fine".
+ */
+export async function verifyIngest(
+  vmBaseUrl: string,
+  labels: { vantage: string; view: string },
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  const query = `infra_probe_last_run_timestamp_seconds{vantage=${JSON.stringify(labels.vantage)},view=${JSON.stringify(labels.view)}}`;
+  const url = `${vmBaseUrl.replace(/\/+$/, "")}/api/v1/query?query=${encodeURIComponent(query)}`;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return false;
+    const body = (await response.json()) as { data?: { result?: unknown[] } };
+    return (body.data?.result?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 export function createMetricsPipeline(options: PipelineOptions): MetricsPipeline {

@@ -14,7 +14,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import type { ResourceMetrics } from "@opentelemetry/sdk-metrics";
 import {
   createMetricsPipeline,
-  stripClientTimestamps,
+  sampleTimestampsSeconds,
+  verifyIngest,
   type MetricsPipeline,
 } from "../../src/probe/export.ts";
 import type { CheckOutcome } from "../../src/probe/checks.ts";
@@ -42,7 +43,34 @@ function vmFixture(statuses: number[] = []) {
       return new Response(null, { status: remaining.shift() ?? 200 });
     },
   });
-  return { server, requests, url: `http://127.0.0.1:${server.port}` };
+  /**
+   * Sample timestamps as seen ON THE WIRE, in seconds.
+   *
+   * OTLP encodes `time_unix_nano` as protobuf fixed64, so every 8-byte
+   * little-endian window that decodes to a plausible epoch-nanosecond value
+   * is a timestamp the collector sent. Reading the bytes rather than the
+   * in-process snapshot is deliberate: the bug this guards against was
+   * invisible to every in-process signal, and only what reaches VM matters.
+   */
+  const exportedSampleTimestampsSeconds = (): number[] => {
+    const found: number[] = [];
+    const lowerNs = BigInt(Date.now() - 3_600_000) * 1_000_000n;
+    const upperNs = BigInt(Date.now() + 3_600_000) * 1_000_000n;
+    for (const request of requests) {
+      for (let offset = 0; offset + 8 <= request.body.length; offset++) {
+        const value = request.body.readBigUInt64LE(offset);
+        if (value >= lowerNs && value <= upperNs) found.push(Number(value / 1_000_000n) / 1000);
+      }
+    }
+    return found;
+  };
+
+  return {
+    server,
+    requests,
+    exportedSampleTimestampsSeconds,
+    url: `http://127.0.0.1:${server.port}`,
+  };
 }
 
 const OUTCOMES: CheckOutcome[] = [
@@ -144,35 +172,83 @@ describe("pushCycle — retry then drop (D6: 3 attempts, then keep probing)", ()
   });
 });
 
-describe("stripClientTimestamps — D8: samples carry no client timestamps", () => {
-  test("every data point's start and end time is zeroed in place", () => {
+describe("sample timestamps — the samples must be STORABLE, not just accepted", () => {
+  /**
+   * This unit originally zeroed every sample timestamp so VM would assign
+   * arrival time server-side. Real VictoriaMetrics discards those samples at
+   * storage (`vm_rows_ignored_total{reason="small_timestamp"}`): 21 of 22
+   * rows dropped on VM 1.148.0 and 1.145.0, `infra_probe_success` never
+   * queryable — while the POST returned 2xx, the SDK reported SUCCESS, and
+   * the exporter logged `delivered=true`. No signal inside this process
+   * could see it.
+   *
+   * So the guard is on the wire values, not on the delivery result.
+   */
+  test("exported samples carry real, recent timestamps — never zero or ancient", async () => {
+    const vm = vmFixture();
+    const report = await pipeline(vm.url).pushCycle(OUTCOMES);
+    expect(report.delivered).toBe(true);
+
+    const seconds = vm.exportedSampleTimestampsSeconds();
+    expect(seconds.length).toBeGreaterThan(0);
+
+    // VM rejects anything it reads as far in the past; zero is the extreme
+    // case. Assert every sample sits inside a sane window around now.
+    const now = Date.now() / 1000;
+    for (const sample of seconds) {
+      expect(sample).toBeGreaterThan(now - 300);
+      expect(sample).toBeLessThan(now + 300);
+    }
+  });
+
+  test("sampleTimestampsSeconds reads the collected snapshot's times", () => {
     const metrics = {
       resource: {},
       scopeMetrics: [
         {
           scope: { name: "infra-rules-probe" },
           metrics: [
-            {
-              dataPoints: [
-                { startTime: [1_700_000_000, 123], endTime: [1_700_000_100, 456], value: 1 },
-                { startTime: [1_700_000_000, 789], endTime: [1_700_000_100, 12], value: 0 },
-              ],
-            },
-            { dataPoints: [{ startTime: [5, 5], endTime: [6, 6], value: 0.5 }] },
+            { dataPoints: [{ startTime: [1_700_000_000, 0], endTime: [1_700_000_100, 500_000_000], value: 1 }] },
           ],
         },
       ],
     } as unknown as ResourceMetrics;
 
-    stripClientTimestamps(metrics);
+    expect(sampleTimestampsSeconds(metrics)).toEqual([1_700_000_100.5]);
+  });
+});
 
-    for (const scope of metrics.scopeMetrics) {
-      for (const metric of scope.metrics) {
-        for (const point of metric.dataPoints) {
-          expect(point.startTime).toEqual([0, 0]);
-          expect(point.endTime).toEqual([0, 0]);
-        }
-      }
-    }
+describe("verifyIngest — delivered is not ingested", () => {
+  test("true only when VM actually returns the series", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(JSON.stringify({ data: { result: [{ metric: {}, value: [0, "1"] }] } }), {
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    const url = `http://127.0.0.1:${server.port}`;
+    expect(await verifyIngest(url, { vantage: "edge-1", view: "vpn" })).toBe(true);
+    server.stop(true);
+  });
+
+  test("false when VM returns an empty result — the silent-drop case", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(JSON.stringify({ data: { result: [] } }), {
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    const url = `http://127.0.0.1:${server.port}`;
+    expect(await verifyIngest(url, { vantage: "edge-1", view: "vpn" })).toBe(false);
+    server.stop(true);
+  });
+
+  test("false, never a throw, when VM is unreachable — reports not-proven", async () => {
+    const server = Bun.serve({ port: 0, fetch: () => new Response("x") });
+    const url = `http://127.0.0.1:${server.port}`;
+    server.stop(true);
+    expect(await verifyIngest(url, { vantage: "v", view: "w" }, 500)).toBe(false);
   });
 });
