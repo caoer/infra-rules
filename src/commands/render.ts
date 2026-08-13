@@ -12,6 +12,7 @@ import { RegistrySchema, type Registry } from "../schema/registry.ts";
 import { canonicalJson, stampHeader } from "../lib/canonical.ts";
 import { writeAllOrNothing, writeFileAtomic, type FileSet } from "../lib/atomic-write.ts";
 import { renderers as registeredRenderers, type Renderer } from "../render/index.ts";
+import { scopeToViews } from "../lib/scope.ts";
 
 export async function loadRegistry(path: string): Promise<Registry> {
   const text = await readFile(path, "utf8");
@@ -67,11 +68,18 @@ export interface RenderOptions {
    * expected-outputs list that drifts from the renderers.
    */
   producedListPath?: string;
+  /**
+   * Explicit allowlist of view names to render. Omitted = every view in the
+   * registry, which is only ever safe when the output directory is scratch
+   * or single-org. A per-org repo passes its own views; see lib/scope.ts.
+   */
+  views?: readonly string[];
 }
 
 /** Exit code per D18: 0 rendered, 2 failed. */
 export async function runRender(options: RenderOptions): Promise<number> {
-  const registry = await loadRegistry(options.registryPath);
+  const loaded = await loadRegistry(options.registryPath);
+  const registry = options.views === undefined ? loaded : scopeToViews(loaded, options.views);
   const files = buildFileSet(registry, options.outDir, options.renderers);
   await writeAllOrNothing(files);
 

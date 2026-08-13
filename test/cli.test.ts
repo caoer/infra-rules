@@ -132,3 +132,67 @@ describe("render --produced (stale-artifact detection for consumers)", () => {
     expect(onDisk.filter((f) => !produced.includes(f))).toEqual(["stale.json"]);
   });
 });
+
+/**
+ * CLI WIRING. These exist because U3's suite passed while `validate` was
+ * never reachable from the CLI at all: the command module was tested
+ * directly, so nothing noticed that cli.ts had no route to it. The publish
+ * gates in the consuming repos invoke the BINARY, so the binary is what has
+ * to be tested.
+ */
+describe("cli wiring", () => {
+  async function run(...args: string[]): Promise<{ code: number; stdout: string }> {
+    const proc = Bun.spawn(["bun", CLI, ...args], { stdout: "pipe", stderr: "pipe" });
+    const stdout = await new Response(proc.stdout).text();
+    return { code: await proc.exited, stdout };
+  }
+
+  const valid = join(import.meta.dir, "..", "fixtures", "valid.json");
+
+  test("validate is reachable from the CLI, positionally, and exits 0 on a valid registry", async () => {
+    const { code, stdout } = await run("validate", valid);
+    expect(code).toBe(0);
+    expect(stdout).toContain("valid registry");
+  });
+
+  test("validate also accepts --registry, for symmetry with render/diff", async () => {
+    expect((await run("validate", "--registry", valid)).code).toBe(0);
+  });
+
+  test("validate exits 1 on a bad registry, so a publish gate can block on it", async () => {
+    const bad = join(import.meta.dir, "..", "fixtures", "malformed.json");
+    expect((await run("validate", bad)).code).toBe(1);
+  });
+
+  test("every command in the usage text is actually routed", async () => {
+    const usage = (await run("--help")).stdout;
+    for (const command of ["validate", "render", "diff"]) {
+      expect(usage).toContain(command);
+      // An unrouted command exits 2 with "unknown command"; a routed one
+      // reaches its handler and fails on missing arguments instead.
+      const { stdout: _s, code } = await run(command);
+      expect(code).toBe(2);
+      const proc = Bun.spawn(["bun", CLI, command], { stdout: "pipe", stderr: "pipe" });
+      await proc.exited;
+      expect(await new Response(proc.stderr).text()).not.toContain("unknown command");
+    }
+  });
+
+  test("package.json exposes the CLI as a bin, or `bun add` gives consumers nothing", async () => {
+    const pkg = await Bun.file(join(import.meta.dir, "..", "package.json")).json();
+    expect(pkg.bin?.["infra-rules"]).toBeDefined();
+    expect(pkg.private).toBeUndefined(); // private blocks consumption
+  });
+
+  test("--views scopes what reaches disk; an unknown view exits 2 without writing", async () => {
+    const scopedOut = join(dir, "scoped");
+    const { code } = await run("render", "--registry", valid, "--out", scopedOut, "--views", "vpn");
+    expect(code).toBe(0);
+    expect(await Bun.file(join(scopedOut, "records/vpn.json")).exists()).toBe(true);
+    expect(await Bun.file(join(scopedOut, "records/office.json")).exists()).toBe(false);
+
+    const typoOut = join(dir, "typo");
+    expect((await run("render", "--registry", valid, "--out", typoOut, "--views", "vpm")).code).toBe(2);
+    expect(await Bun.file(join(typoOut, "records/vpn.json")).exists()).toBe(false);
+  });
+});

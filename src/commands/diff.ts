@@ -9,11 +9,15 @@ import { readFile } from "node:fs/promises";
 
 import { buildFileSet, loadRegistry } from "./render.ts";
 import type { Renderer } from "../render/index.ts";
+import { scopeToViews } from "../lib/scope.ts";
 
 export interface DiffOptions {
   registryPath: string;
   outDir: string;
   renderers?: Renderer[];
+  /** Same allowlist as `render` — an unscoped diff against a scoped tree
+   * would report every other org's artifacts as missing. */
+  views?: readonly string[];
 }
 
 async function readIfExists(path: string): Promise<string | null> {
@@ -27,7 +31,8 @@ async function readIfExists(path: string): Promise<string | null> {
 
 /** Exit code per D18: 0 no difference, 1 difference found, 2 crash (thrown). */
 export async function runDiff(options: DiffOptions): Promise<number> {
-  const registry = await loadRegistry(options.registryPath);
+  const loaded = await loadRegistry(options.registryPath);
+  const registry = options.views === undefined ? loaded : scopeToViews(loaded, options.views);
   const expected = buildFileSet(registry, options.outDir, options.renderers);
 
   const differing: string[] = [];
