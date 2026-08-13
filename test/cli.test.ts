@@ -47,6 +47,10 @@ describe("cli exit codes (D18)", () => {
   });
 
   test("diff on a matching tree exits 0", async () => {
+    // Render first: an unrendered out dir is a MISSING tree, not a matching
+    // one, and every registered renderer's file has to be on disk for the
+    // comparison to mean anything.
+    expect(await cli("render", "--registry", registryPath, "--out", outDir)).toBe(0);
     expect(await cli("diff", "--registry", registryPath, "--out", outDir)).toBe(0);
   });
 
