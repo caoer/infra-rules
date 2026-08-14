@@ -39,6 +39,14 @@ export const RegistrySchema = z.strictObject({
   schemaVersion: z.literal(SCHEMA_VERSION),
   snapshots: z.record(z.string().min(1), z.array(EntitySchema)),
   hand: z.array(EntitySchema),
+  /**
+   * Address space retired from the fleet. Any live datum inside one of these
+   * ranges hard-fails validation (integrity `[retired-range]`). The REAL
+   * ranges are fleet-private inventory detail, so they live here — in the
+   * org's private data — never in engine code; the engine's built-in
+   * `RETIRED_RANGES` holds fixture-space placeholders only.
+   */
+  retiredRanges: z.array(z.cidrv4()).optional(),
 });
 
 export type Registry = z.infer<typeof RegistrySchema>;

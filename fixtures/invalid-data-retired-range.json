@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "retiredRanges": ["10.30.99.0/24"],
+  "snapshots": {},
+  "hand": [
+    { "kind": "network", "name": "sunset-lan", "cidr": "10.30.99.0/24" },
+    { "kind": "host", "name": "holdout", "easytier_ip": "10.30.99.5" },
+    { "kind": "policy", "name": "direct" },
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "zombie-route",
+      "match": { "match": "cidr", "cidr": "10.30.99.128/25" },
+      "policy": "direct",
+      "priority": 50
+    }
+  ]
+}

@@ -29,7 +29,9 @@ import { RegistrySchema } from "./schema/registry.ts";
  * PLACEHOLDER VALUES. This repo is public and org-agnostic, so it carries
  * fixture-space ranges only — a real retired range named here would publish
  * the very inventory detail the registry keeps private. An operator enforcing
- * a real fleet supplies the real ranges from their private registry data.
+ * a real fleet supplies the real ranges through the envelope's optional
+ * `retiredRanges` field (private registry data); validation enforces the
+ * union of that field and this constant.
  *
  * Two classes deliberately stay OUT of any such list, whatever the values:
  * - A range whose retirement is unconfirmed. It must never hard-fail, because
@@ -317,10 +319,12 @@ function checkCidrsCanonical(all: Located[], report: Reporter): void {
 }
 
 /** Retired ranges hard-fail wherever they appear as live data: any cidr
- * overlapping one, any address inside one. */
-function checkRetiredRanges(all: Located[], report: Reporter): void {
+ * overlapping one, any address inside one. Enforces the union of the
+ * built-in placeholders and the envelope's data-driven `retiredRanges`. */
+function checkRetiredRanges(all: Located[], report: Reporter, dataRanges: readonly string[]): void {
+  const ranges = [...new Set([...RETIRED_RANGES, ...dataRanges])];
   eachCidrField(all, (located, path, cidr, field) => {
-    for (const retired of RETIRED_RANGES) {
+    for (const retired of ranges) {
       if (cidrsOverlap(cidr, retired)) {
         report(
           path,
@@ -330,7 +334,7 @@ function checkRetiredRanges(all: Located[], report: Reporter): void {
     }
   });
   eachIpField(all, (located, path, ip, field) => {
-    for (const retired of RETIRED_RANGES) {
+    for (const retired of ranges) {
       if (cidrContainsIp(retired, ip)) {
         report(
           path,
@@ -357,7 +361,7 @@ export function checkIntegrity(registry: Registry, ctx: z.RefinementCtx): void {
   checkIpsInsideCidrs(all, groups, report);
   checkAllocationsDisjoint(all, report);
   checkCidrsCanonical(all, report);
-  checkRetiredRanges(all, report);
+  checkRetiredRanges(all, report, registry.retiredRanges ?? []);
 }
 
 /**
