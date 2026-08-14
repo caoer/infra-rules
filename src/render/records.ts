@@ -16,6 +16,7 @@
  */
 
 import { registerRenderer, type RenderedFile } from "./index.ts";
+import { assertNotCollapsed } from "./collapse.ts";
 import type { JsonObject } from "../lib/canonical.ts";
 import type { Entity, Registry } from "../schema/registry.ts";
 import type { Host } from "../schema/host.ts";
@@ -55,7 +56,8 @@ export function renderRecords(registry: Registry): RenderedFile[] {
     .filter((entity): entity is Extract<Entity, { kind: "service" }> => entity.kind === "service")
     .sort((a, b) => compare(a.dnsName, b.dnsName));
 
-  return views.map((view) => {
+  let emitted = 0;
+  const files = views.map((view) => {
     const records: JsonObject[] = [];
 
     for (const service of services) {
@@ -75,11 +77,21 @@ export function renderRecords(registry: Registry): RenderedFile[] {
       records.push({ name: service.dnsName, type: "A", value: address, host: host.name });
     }
 
+    emitted += records.length;
     return {
       path: `records/${view.name}.json`,
       value: { view: view.name, scope: scopeOf(view), records },
     };
   });
+
+  assertNotCollapsed({
+    renderer: "records",
+    services: services.length,
+    views: views.length,
+    emitted,
+    unit: "records",
+  });
+  return files;
 }
 
 registerRenderer({ name: "records", render: renderRecords });

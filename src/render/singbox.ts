@@ -28,6 +28,7 @@
 
 import type { Registry, Entity } from "../schema/registry.ts";
 import { answerFor, type View } from "../schema/view.ts";
+import { assertNotCollapsed } from "./collapse.ts";
 import type { JsonObject } from "../lib/canonical.ts";
 import { registerRenderer, type RenderedFile } from "./index.ts";
 
@@ -96,7 +97,8 @@ function render(registry: Registry): RenderedFile[] {
       return a.view.name < b.view.name ? -1 : a.view.name > b.view.name ? 1 : 0;
     });
 
-  return ordered.map(({ view }) => {
+  let emitted = 0;
+  const files = ordered.map(({ view }) => {
     const rules: ExactDnsRule[] = [];
     for (const service of services) {
       const host = hosts.get(service.host);
@@ -115,11 +117,21 @@ function render(registry: Registry): RenderedFile[] {
         answer: [`${service.dnsName}. IN A ${answer}`],
       });
     }
+    emitted += rules.length;
     return {
       path: `singbox/dnsrules-${view.name}.json`,
       value: { dnsRules: sortDnsRules(rules) },
     };
   });
+
+  assertNotCollapsed({
+    renderer: "singbox",
+    services: services.length,
+    views: views.length,
+    emitted,
+    unit: "dnsRules",
+  });
+  return files;
 }
 
 export const singboxRenderer = { name: "singbox", render };

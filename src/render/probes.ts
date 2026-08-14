@@ -24,6 +24,7 @@ import type { Host } from "../schema/host.ts";
 import type { Service } from "../schema/service.ts";
 import type { View } from "../schema/view.ts";
 import { answerFor } from "../schema/view.ts";
+import { assertNotCollapsed } from "./collapse.ts";
 import { PROBE_MANIFEST_VERSION, type ProbeCheck, type ProbeManifest } from "../schema/probe.ts";
 
 /** Defaults for an `http` block that omits them, so the exporter needs none. */
@@ -81,22 +82,32 @@ export function renderProbes(registry: Registry): ProbeManifest {
   const services = [...firstByName(entities.filter((entity) => entity.kind === "service")).values()];
   const views = [...firstByName(entities.filter((entity) => entity.kind === "view")).values()];
 
-  return {
-    manifestVersion: PROBE_MANIFEST_VERSION,
-    views: views
-      .sort((a, b) => compare(a.name, b.name))
-      .map((view) => ({
-        view: view.name,
-        checks: services
-          .flatMap((service) => {
-            // A dangling service.host is an integrity error (Unit 2); the
-            // renderer skips it rather than inventing an address.
-            const host = hosts.get(service.host);
-            return host === undefined ? [] : checksFor(service, host, view);
-          })
-          .sort((a, b) => compare(a.service, b.service) || compare(a.check, b.check)),
-      })),
-  };
+  const rendered = views
+    .sort((a, b) => compare(a.name, b.name))
+    .map((view) => ({
+      view: view.name,
+      checks: services
+        .flatMap((service) => {
+          // A dangling service.host is an integrity error (Unit 2); the
+          // renderer skips it rather than inventing an address.
+          const host = hosts.get(service.host);
+          return host === undefined ? [] : checksFor(service, host, view);
+        })
+        .sort((a, b) => compare(a.service, b.service) || compare(a.check, b.check)),
+    }));
+
+  assertNotCollapsed({
+    renderer: "probes",
+    // Only services whose host resolves can contribute a check, so a registry
+    // that holds nothing but dangling references is not a collapse — it is the
+    // documented skip above, and `records` throws on the same input first.
+    services: services.filter((service) => hosts.has(service.host)).length,
+    views: views.length,
+    emitted: rendered.reduce((total, view) => total + view.checks.length, 0),
+    unit: "checks",
+  });
+
+  return { manifestVersion: PROBE_MANIFEST_VERSION, views: rendered };
 }
 
 registerRenderer({
