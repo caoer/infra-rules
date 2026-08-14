@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HostSchema } from "../../src/schema/host.ts";
+import { HostSchema, HOST_SOURCE, HOST_SOURCES } from "../../src/schema/host.ts";
 
 const base = {
   kind: "host",
@@ -48,5 +48,26 @@ describe("HostSchema", () => {
 
   test("unknown keys rejected (strict — field drift fails loud)", () => {
     expect(HostSchema.safeParse({ ...base, et_ip: "10.99.1.10" }).success).toBe(false);
+  });
+});
+
+/**
+ * `source` is a contract between the the inventory repo exporter (writer) and the client-profile
+ * renderer (filter). If the two disagree on the literal, the filter selects
+ * nothing and the renderer emits an empty host set — silent, and exactly the
+ * failure the field was added to prevent. Pinning the values here means both
+ * sides import one definition instead of retyping a string.
+ */
+describe("HOST_SOURCE contract", () => {
+  test("the canonical values are stable", () => {
+    expect(HOST_SOURCE.sshInventory).toBe("ssh-inventory");
+    expect(HOST_SOURCE.meshOverlay).toBe("mesh-overlay");
+    expect(HOST_SOURCES).toEqual(["ssh-inventory", "mesh-overlay"]);
+  });
+
+  test("hosts carrying the canonical values validate", () => {
+    for (const source of HOST_SOURCES) {
+      expect(HostSchema.safeParse({ ...base, source }).success).toBe(true);
+    }
   });
 });

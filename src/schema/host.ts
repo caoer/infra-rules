@@ -26,6 +26,28 @@ import { z } from "zod";
  * broader export silently adds output lines to a file whose value is being
  * byte-diffed.
  */
+/**
+ * Canonical `source` values.
+ *
+ * This string is a CONTRACT between two units that never speak directly: the
+ * the inventory repo data exporter writes it, and the client-profile renderer filters on it. A
+ * disagreement ("ssh_inventory" vs "ssh-inventory") makes the filter select
+ * nothing, and a renderer that silently emits an empty host set is the exact
+ * failure this whole design exists to prevent. Both sides import from here.
+ */
+export const HOST_SOURCE = {
+  /** Hosts from the SSH inventory (`the SSH inventory`) — the set
+   * `the legacy mesh generator` evaluated, i.e. the byte-identity set. */
+  sshInventory: "ssh-inventory",
+  /** Hosts contributed by the mesh.nix overlay; in the registry, not in the
+   * pre-cutover client profile. */
+  meshOverlay: "mesh-overlay",
+} as const;
+
+export type HostSource = (typeof HOST_SOURCE)[keyof typeof HOST_SOURCE];
+
+export const HOST_SOURCES: readonly string[] = Object.values(HOST_SOURCE);
+
 export const HostSchema = z
   .strictObject({
     kind: z.literal("host"),
