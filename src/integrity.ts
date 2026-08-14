@@ -15,6 +15,7 @@
 import { z } from "zod";
 import {
   canonicalCidr,
+  cidrContainsCidr,
   cidrContainsIp,
   cidrsOverlap,
   hasHostBits,
@@ -166,6 +167,67 @@ function checkHostMembershipRefs(
         report(
           [...located.path, "networks", networkName],
           `[network-ref] ${ident(located)}: network "${networkName}" is not a declared network entity`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * A routing intent's declared `mesh`, checked against what THIS envelope can
+ * see. The name may resolve in another org's file (org files render
+ * individually), so a dangling name is NOT an error here — but a mesh entity
+ * that IS present must contain the intent's cidr range: declaring range X
+ * inside mesh M when M's space does not hold X is a typo whichever file it
+ * parses in. Domain-shaped intents carry no range to check.
+ */
+function checkRoutingMeshRanges(
+  all: Located[],
+  groups: Map<string, Located[]>,
+  report: Reporter,
+): void {
+  for (const located of all) {
+    if (located.entity.kind !== "routing" || located.entity.entry !== "intent") continue;
+    const intent = located.entity;
+    if (intent.mesh === undefined || intent.match.match !== "cidr") continue;
+    const mesh = groups.get(`mesh\u0000${intent.mesh}`)?.[0]?.entity;
+    if (mesh === undefined || mesh.kind !== "mesh" || mesh.cidr === undefined) continue;
+    if (!cidrContainsCidr(mesh.cidr, intent.match.cidr)) {
+      report(
+        [...located.path, "mesh"],
+        `[routing-mesh] ${ident(located)}: match.cidr ${intent.match.cidr} is outside mesh "${intent.mesh}" cidr ${mesh.cidr} — a member target would route the wrong range over its mesh path`,
+      );
+    }
+  }
+}
+
+/**
+ * routeTarget references. `resolver` and every `policyOutbounds` key resolve
+ * intra-org (a target, its resolver and its policies travel together), so
+ * both are hard dangling checks. `memberOf` keys name mesh entities that may
+ * live in ANOTHER org's file — same cross-org tolerance as routing.mesh; the
+ * routerules renderer refuses a membership no intent declares, which is where
+ * a memberOf typo surfaces loudly.
+ */
+function checkRouteTargetRefs(
+  all: Located[],
+  groups: Map<string, Located[]>,
+  report: Reporter,
+): void {
+  for (const located of all) {
+    if (located.entity.kind !== "routeTarget") continue;
+    const target = located.entity;
+    if (!groups.has(`resolver\u0000${target.resolver}`)) {
+      report(
+        [...located.path, "resolver"],
+        `[routetarget-refs] ${ident(located)}: resolver "${target.resolver}" is not a declared resolver entity`,
+      );
+    }
+    for (const policyName of Object.keys(target.policyOutbounds)) {
+      if (!groups.has(`policy\u0000${policyName}`)) {
+        report(
+          [...located.path, "policyOutbounds", policyName],
+          `[routetarget-refs] ${ident(located)}: policyOutbounds key "${policyName}" is not a declared policy entity`,
         );
       }
     }
@@ -482,6 +544,8 @@ export function checkIntegrity(registry: Registry, ctx: z.RefinementCtx): void {
   checkDuplicateEntities(groups, report);
   checkServiceHostRefs(all, groups, report);
   checkPolicyRefs(all, groups, report);
+  checkRoutingMeshRanges(all, groups, report);
+  checkRouteTargetRefs(all, groups, report);
   checkHostMembershipRefs(all, groups, report);
   checkResolverViews(all, groups, report);
   checkServiceViewDeclarations(all, groups, report);

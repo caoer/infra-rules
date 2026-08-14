@@ -86,6 +86,30 @@ describe("integrity — each check catches its violation class", () => {
     expect(paths[0]).toBe("hand[0].host");
   });
 
+  test("[routing-mesh] a declared mesh that is present must contain the intent's range", () => {
+    const { messages, paths } = violationsOf("invalid-routing-mesh-range.json");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toStartWith("[routing-mesh]");
+    expect(messages[0]).toContain('routing "stray-site"');
+    expect(messages[0]).toContain("10.99.192.0/24");
+    expect(messages[0]).toContain('mesh "lab-mesh"');
+    expect(paths[0]).toBe("hand[2].mesh");
+  });
+
+  test("[routetarget-refs] resolver and policyOutbounds keys must resolve", () => {
+    const { messages } = violationsOf("invalid-routetarget-dangling.json");
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toStartWith("[routetarget-refs]");
+    expect(messages[0]).toContain('resolver "ghost-resolver"');
+    expect(messages[1]).toStartWith("[routetarget-refs]");
+    expect(messages[1]).toContain('policyOutbounds key "ghost-policy"');
+  });
+
+  test("a mesh name that resolves in ANOTHER org's file is tolerated — org files render individually", () => {
+    const { messages } = violationsOf("valid-cross-org-mesh.json");
+    expect(messages).toEqual([]);
+  });
+
   test("[policy-ref] routing.policy must name a declared policy entity", () => {
     const { messages, paths } = violationsOf("invalid-policy-dangling.json");
     expect(messages).toHaveLength(1);

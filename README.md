@@ -3,9 +3,14 @@
 Org-agnostic infrastructure registry + rules engine. Bun + TypeScript + zod v4.
 
 One schema for hosts, networks, meshes, views, resolvers, policies, services, routing
-intent and proxy exits; renderers that turn that registry into the config each consumer needs
-(probe manifests, sing-box `dnsRules`, DNS records, Surge dconf) and a probe exporter
-that pushes reachability metrics to VictoriaMetrics.
+intents, route targets and proxy exits; renderers that turn that registry into the config
+each consumer needs (probe manifests, sing-box `dnsRules` and `routeRules`, DNS records,
+Surge dconf) and a probe exporter that pushes reachability metrics to VictoriaMetrics.
+
+Routing intents stay abstract in the registry (range → policy). Each render target
+declares its mesh membership explicitly — a member routes a mesh's space over its own
+path into that overlay; a non-member detours through proxy groups. Membership is data,
+never inferred from addresses.
 
 ## Status
 

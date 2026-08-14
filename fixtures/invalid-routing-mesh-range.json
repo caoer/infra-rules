@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    {
+      "kind": "mesh",
+      "name": "lab-mesh",
+      "cidr": "10.99.0.0/18",
+      "allocation": { "vocabulary": "owner-subnet", "owner": "tester", "subnet": "10.99.0.0/18" }
+    },
+    { "kind": "policy", "name": "M_lab" },
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "stray-site",
+      "match": { "match": "cidr", "cidr": "10.99.192.0/24" },
+      "mesh": "lab-mesh",
+      "policy": "M_lab",
+      "priority": 10
+    }
+  ]
+}

@@ -4,6 +4,7 @@
   "spares": ["exit-west-2"],
   "proxyExtras": "tfo=true, udp-relay=true",
   "hostSuffix": ".mesh.test",
-  "policyGroups": { "mesh": "PG_mesh" },
-  "pinPolicy": "mesh"
+  "policyGroups": { "mesh": "PG_mesh", "site-a": "PG_site_a" },
+  "pinPolicy": "mesh",
+  "memberOf": {}
 }

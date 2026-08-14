@@ -3,10 +3,12 @@
  *
  * Renders the mesh routing unit of a Surge profile: an SS `[Proxy]` block
  * from proxyExit entities, per-host `/32` pins grouped by region, the
+ * membership-resolved routing intents (site ranges, LAN sites, domains), the
  * always-last catch-all ranges (D14), and a `[Host]` block mirroring the
  * overlay's magic DNS (`<name><hostSuffix>`). The output replaces a hand-rolled
- * per-fleet generator; its acceptance is byte-parity with that generator's
- * artifact (D19), so the line layout below is deliberately faithful to it.
+ * per-fleet generator; its acceptance was byte-parity with that generator's
+ * artifact (D19) — the intents section is the first deliberate content change
+ * past it, accepted by semantic parity with the hand rules it replaces.
  *
  * NOT in the renderer registry (`render/index.ts`) on purpose: this artifact
  * carries proxy credentials, so it must never be emitted into the generic
@@ -35,8 +37,8 @@ import { z } from "zod";
 import type { Registry, Entity } from "../schema/registry.ts";
 import { HOST_SOURCE, type Host } from "../schema/host.ts";
 import type { ProxyExit } from "../schema/proxy-exit.ts";
-import type { RoutingCatchAll } from "../schema/routing.ts";
-import { orderRouting } from "../schema/routing.ts";
+import type { Routing, RoutingCatchAll } from "../schema/routing.ts";
+import { orderRouting, resolveRoute } from "../schema/routing.ts";
 import { ipToUint32 } from "../lib/cidr.ts";
 
 /**
@@ -61,6 +63,16 @@ export const SurgeLayoutSchema = z
     policyGroups: z.record(z.string().min(1), z.string().min(1)),
     /** Registry policy the `/32` pins route to. */
     pinPolicy: z.string().min(1),
+    /**
+     * Mesh entity name → Surge policy group of this profile's direct path
+     * into that overlay. Membership is EXPLICIT and first-class: `{}`
+     * declares a profile whose node is a member of NOTHING — every routing
+     * intent then resolves through `policyGroups`, the proxy detours (a
+     * Surge client outside the mesh reaches mesh space through a gateway).
+     * Required, never defaulted: non-membership is a statement, not an
+     * omission.
+     */
+    memberOf: z.record(z.string().min(1), z.string().min(1)),
   })
   .superRefine((layout, ctx) => {
     const regions = new Set(layout.regionOrder);
@@ -131,6 +143,7 @@ export interface SurgeStats {
   pins: number;
   pinRegions: number;
   unmapped: number;
+  intents: number;
   catchAlls: number;
   hosts: number;
 }
@@ -227,6 +240,42 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
     .filter((member) => member.region === undefined || !regionRank.has(member.region))
     .sort(byIp);
 
+  // ── routing intents: every `entry:"intent"` entity, membership-resolved.
+  // The registry keeps intents abstract (range → policy); THIS profile's
+  // memberOf decides how each resolves — a member routes a mesh-space range
+  // over its own path into that overlay, a non-member (memberOf {}) detours
+  // through the policy's proxy group. Emitted between the per-host pins
+  // (most-specific overrides stay strongest) and the always-last catch-alls.
+  const intents = orderRouting(
+    entities.filter(
+      (entity): entity is Routing & { entry: "intent" } =>
+        entity.kind === "routing" && entity.entry === "intent",
+    ),
+  );
+  const intentGroup = (entry: Routing & { entry: "intent" }): string => {
+    const groupName = resolveRoute(entry, {
+      memberOf: layout.memberOf,
+      policyMap: layout.policyGroups,
+    });
+    if (groupName === undefined) {
+      fail(
+        `intent "${entry.name}": policy "${entry.policy}" has no policyGroups mapping in the layout`,
+      );
+    }
+    return groupName;
+  };
+  const intentLine = (entry: Routing & { entry: "intent" }): string => {
+    const groupName = intentGroup(entry);
+    switch (entry.match.match) {
+      case "cidr":
+        return `IP-CIDR,${entry.match.cidr},${groupName},no-resolve`;
+      case "domain":
+        return `DOMAIN,${entry.match.domain},${groupName}`;
+      case "domain-suffix":
+        return `DOMAIN-SUFFIX,${entry.match.suffix},${groupName}`;
+    }
+  };
+
   // ── catch-alls: every `entry:"catch-all"` routing entity, priority-ordered
   // among themselves, emitted in the always-last pass (D14). Membership is
   // the entry type in the registry — data, not a layout name list — so no
@@ -284,6 +333,16 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
     lines.push("");
   }
 
+  if (intents.length > 0) {
+    lines.push(
+      "# Routing intents (site ranges, LAN sites, domains) — membership-resolved via the layout",
+    );
+    for (const entry of intents) {
+      lines.push(intentLine(entry));
+    }
+    lines.push("");
+  }
+
   lines.push("# Mesh catch-all ranges — always after the per-host pins (Surge [Rule] is first-match)");
   catchAlls.forEach((entry, index) => {
     if (catchAlls.length > 1 && index === catchAlls.length - 1) {
@@ -309,6 +368,7 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
       pins: pins.length,
       pinRegions: new Set(pins.map((pin) => pin.region)).size,
       unmapped: unmapped.length,
+      intents: intents.length,
       catchAlls: catchAlls.length,
       hosts: members.length,
     },
