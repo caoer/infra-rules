@@ -17,7 +17,13 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { buildResolver, runCheck, type CheckRunOptions } from "../../src/probe/checks.ts";
-import { loadConfig, loadCycleChecks, runCycle, type ProbeConfig } from "../../src/probe/main.ts";
+import {
+  createIngestSelfCheck,
+  loadConfig,
+  loadCycleChecks,
+  runCycle,
+  type ProbeConfig,
+} from "../../src/probe/main.ts";
 import { PROBE_MANIFEST_VERSION } from "../../src/schema/probe.ts";
 
 /** Minimal DNS responder: answers A queries from `records`, NXDOMAIN for
@@ -289,7 +295,17 @@ describe("config — identity comes from env and fails loud (main.ts)", () => {
       vmBaseUrl: "http://127.0.0.1:8428",
       intervalSeconds: 60,
       checkTimeoutMs: 5_000,
+      verifyIntervalSeconds: 900,
     });
+  });
+
+  test("the ingest self-check cadence is tunable and refuses nonsense", () => {
+    expect(
+      loadConfig({ ...FULL_ENV, PROBE_VERIFY_INTERVAL_SECONDS: "300" }).verifyIntervalSeconds,
+    ).toBe(300);
+    expect(() => loadConfig({ ...FULL_ENV, PROBE_VERIFY_INTERVAL_SECONDS: "0" })).toThrow(
+      /PROBE_VERIFY_INTERVAL_SECONDS/,
+    );
   });
 
   test("an unset vantage refuses startup by name — an unlabelled exporter would poison absence-vs-zero", () => {
@@ -337,6 +353,7 @@ describe("cycle — the manifest is re-read from disk every run (main.ts)", () =
       vmBaseUrl: "http://127.0.0.1:9",
       intervalSeconds: 60,
       checkTimeoutMs: 1_000,
+      verifyIntervalSeconds: 900,
       dnsServers: [`127.0.0.1:${dns.port}`],
     };
   }
@@ -388,5 +405,136 @@ describe("cycle — the manifest is re-read from disk every run (main.ts)", () =
       }),
     );
     expect(await runCycle(config("vpn"))).toEqual([]);
+  });
+});
+
+/**
+ * Review #6: an exporter that looks alive while exporting nothing.
+ *
+ * The old code latched `ingestVerified = true` BEFORE the verification
+ * promise resolved, so one failed check could never be retried and the
+ * process reported a health nobody had observed. These tests hold the two
+ * properties that replaced it: a check concludes before it counts, and a
+ * concluded check expires.
+ */
+describe("ingest self-check — health is observed, and it expires (main.ts)", () => {
+  function clock(startMs = 0) {
+    let ms = startMs;
+    return { now: () => ms, advance: (by: number) => (ms += by) };
+  }
+
+  test("it fires on the first delivered cycle and records what the check FOUND", async () => {
+    const time = clock();
+    const check = createIngestSelfCheck({
+      verify: async () => true,
+      intervalMs: 900_000,
+      now: time.now,
+      log: () => {},
+    });
+    expect(check.verified).toBeUndefined();
+    check.onCycle(true);
+    // Not verified yet — the promise has not resolved. This is the bug.
+    expect(check.verified).toBeUndefined();
+    await check.settled;
+    expect(check.verified).toBe(true);
+  });
+
+  test("it DECLINES loudly, and a decline does not latch — the next window retries", async () => {
+    const time = clock();
+    const lines: string[] = [];
+    let answer = false;
+    let calls = 0;
+    const check = createIngestSelfCheck({
+      verify: async () => {
+        calls++;
+        return answer;
+      },
+      intervalMs: 900_000,
+      now: time.now,
+      log: (line) => lines.push(line),
+    });
+
+    check.onCycle(true);
+    await check.settled;
+    expect(check.verified).toBe(false);
+    expect(calls).toBe(1);
+    expect(lines.at(-1)).toMatch(/WARNING ingest NOT verified/);
+
+    // Same window: no re-query, the answer is still fresh.
+    check.onCycle(true);
+    await check.settled;
+    expect(calls).toBe(1);
+
+    // Next window: it retries — the old latch made this impossible.
+    time.advance(900_000);
+    answer = true;
+    check.onCycle(true);
+    await check.settled;
+    expect(calls).toBe(2);
+    expect(check.verified).toBe(true);
+  });
+
+  test("a healthy verdict expires, and losing ingest is logged as a transition", async () => {
+    const time = clock();
+    const lines: string[] = [];
+    let answer = true;
+    const check = createIngestSelfCheck({
+      verify: async () => answer,
+      intervalMs: 900_000,
+      now: time.now,
+      log: (line) => lines.push(line),
+    });
+
+    check.onCycle(true);
+    await check.settled;
+    expect(check.verified).toBe(true);
+
+    time.advance(900_000);
+    answer = false;
+    check.onCycle(true);
+    await check.settled;
+    expect(check.verified).toBe(false);
+    expect(lines.at(-1)).toMatch(/it was queryable at the last check/);
+  });
+
+  test("undelivered cycles never arm it, and a check in flight is never doubled", async () => {
+    const time = clock();
+    let calls = 0;
+    let release!: (value: boolean) => void;
+    const check = createIngestSelfCheck({
+      verify: () => {
+        calls++;
+        return new Promise<boolean>((resolve) => (release = resolve));
+      },
+      intervalMs: 900_000,
+      now: time.now,
+      log: () => {},
+    });
+
+    check.onCycle(false);
+    expect(calls).toBe(0); // nothing reached VM; there is nothing to verify
+
+    check.onCycle(true);
+    const settled = check.settled;
+    time.advance(900_000); // due again, but the first is still running
+    check.onCycle(true);
+    expect(calls).toBe(1);
+
+    release(true);
+    await settled;
+    expect(check.verified).toBe(true);
+  });
+
+  test("a verify that throws reads as NOT verified, never as healthy", async () => {
+    const check = createIngestSelfCheck({
+      verify: async () => {
+        throw new Error("VM unreachable");
+      },
+      intervalMs: 900_000,
+      log: () => {},
+    });
+    check.onCycle(true);
+    await check.settled;
+    expect(check.verified).toBe(false);
   });
 });

@@ -27,6 +27,21 @@ import { createMetricsPipeline, verifyIngest } from "./export.ts";
 const REQUIRED_ENV = ["PROBE_MANIFEST", "PROBE_VANTAGE", "PROBE_VIEW", "PROBE_VM_URL"] as const;
 const DEFAULT_INTERVAL_SECONDS = 60;
 const DEFAULT_CHECK_TIMEOUT_MS = 5_000;
+/**
+ * How often the exporter re-proves its own ingest (review #6).
+ *
+ * Not once per process: a single optimistic verification at startup is a claim
+ * about one minute of a service that runs for months, and the failure it must
+ * catch (VM dropping samples) arrives later, not at boot.
+ *
+ * Not once per cycle either: one run costs up to ~40s of retries because VM's
+ * search latency offset (30s) hides a just-delivered sample, so a per-cycle
+ * check would spend most of a 60s cycle polling VM to learn nothing new.
+ *
+ * 15 minutes bounds "alive but exporting into the void" to one window, at one
+ * query per 15 cycles on the default interval.
+ */
+const DEFAULT_VERIFY_INTERVAL_SECONDS = 900;
 
 export interface ProbeConfig {
   manifestPath: string;
@@ -35,6 +50,7 @@ export interface ProbeConfig {
   vmBaseUrl: string;
   intervalSeconds: number;
   checkTimeoutMs: number;
+  verifyIntervalSeconds: number;
   dnsServers?: string[];
 }
 
@@ -64,6 +80,11 @@ export function loadConfig(env: Record<string, string | undefined>): ProbeConfig
     vmBaseUrl: env.PROBE_VM_URL!,
     intervalSeconds: positiveNumber(env, "PROBE_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS),
     checkTimeoutMs: positiveNumber(env, "PROBE_CHECK_TIMEOUT_MS", DEFAULT_CHECK_TIMEOUT_MS),
+    verifyIntervalSeconds: positiveNumber(
+      env,
+      "PROBE_VERIFY_INTERVAL_SECONDS",
+      DEFAULT_VERIFY_INTERVAL_SECONDS,
+    ),
   };
 
   const servers = (env.PROBE_DNS_SERVERS ?? "")
@@ -105,6 +126,81 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export interface IngestSelfCheck {
+  /** Call once per cycle with that cycle's delivery result. Never throws,
+   * never blocks: a due check is started detached and settles later. */
+  onCycle(delivered: boolean): void;
+  /** What the last CONCLUDED check found — `undefined` until one concludes.
+   * Never set from a check that has only been started. */
+  readonly verified: boolean | undefined;
+  /** The check currently in flight, for tests that must await a conclusion. */
+  readonly settled: Promise<void> | undefined;
+}
+
+/**
+ * The exporter proving, repeatedly, that its samples reach storage.
+ *
+ * Two rules, both of them the review #6 defect:
+ *
+ * - HEALTH IS NEVER ASSUMED. `verified` moves only when a check RESOLVES.
+ *   The old code set the latch before awaiting the promise, so a failed
+ *   verification could never be retried and the process kept reporting a
+ *   health it had never observed.
+ * - HEALTH EXPIRES. A concluded check is good for `intervalMs`, after which
+ *   the next delivered cycle re-proves it. A false result clears the flag and
+ *   logs loudly, so the journal shows the transition rather than one stale
+ *   line from boot.
+ *
+ * Only delivered cycles arm it: a cycle that never reached VM has nothing to
+ * verify, and querying back for it would report a failure the push already
+ * reported.
+ */
+export function createIngestSelfCheck(options: {
+  verify: () => Promise<boolean>;
+  intervalMs: number;
+  now?: () => number;
+  log?: (line: string) => void;
+}): IngestSelfCheck {
+  const now = options.now ?? Date.now;
+  const log = options.log ?? ((line: string) => console.error(line));
+  let verified: boolean | undefined;
+  let concludedAt: number | undefined;
+  let settled: Promise<void> | undefined;
+
+  return {
+    get verified() {
+      return verified;
+    },
+    get settled() {
+      return settled;
+    },
+    onCycle(delivered: boolean): void {
+      if (!delivered) return;
+      if (settled !== undefined) return; // one in flight; it outlives a cycle
+      if (concludedAt !== undefined && now() - concludedAt < options.intervalMs) return;
+
+      const wasVerified = verified;
+      settled = options.verify()
+        .catch(() => false)
+        .then((present) => {
+          verified = present;
+          concludedAt = now();
+          log(
+            present
+              ? "[probe] ingest verified: series queryable"
+              : "[probe] WARNING ingest NOT verified — pushes report success but the " +
+                  "heartbeat series is not queryable after retrying past the search " +
+                  "latency offset. Metrics are being dropped." +
+                  (wasVerified === true ? " (it was queryable at the last check)" : ""),
+          );
+        })
+        .finally(() => {
+          settled = undefined;
+        });
+    },
+  };
+}
+
 export async function main(): Promise<never> {
   let config: ProbeConfig;
   try {
@@ -130,7 +226,11 @@ export async function main(): Promise<never> {
       `manifest=${config.manifestPath} vm=${config.vmBaseUrl} interval=${config.intervalSeconds}s`,
   );
 
-  let ingestVerified = false;
+  const selfCheck = createIngestSelfCheck({
+    verify: () => verifyIngest(config.vmBaseUrl, config),
+    intervalMs: config.verifyIntervalSeconds * 1000,
+    log: (line) => console.error(`${line} vantage=${config.vantage} vm=${config.vmBaseUrl}`),
+  });
 
   while (true) {
     const cycleStarted = Date.now();
@@ -151,25 +251,10 @@ export async function main(): Promise<never> {
 
       // Delivered is not ingested. A push can be accepted, counted, and
       // stored as nothing (VM drops samples whose timestamps it rejects) —
-      // every in-process signal still says success. So after the first
-      // delivered cycle, ask VM whether the series actually exists. Once,
-      // not every cycle: this is a deployment-correctness check, and a
-      // failure here means the metrics nobody is watching are not there.
-      if (report.delivered && !ingestVerified) {
-        ingestVerified = true;
-        // Detached: verifyIngest retries past VM's search latency offset
-        // (~30s), and probing must not stall waiting for it.
-        void verifyIngest(config.vmBaseUrl, config).then((present) => {
-          console.error(
-            present
-              ? `[probe] ingest verified: series queryable at ${config.vmBaseUrl}`
-              : `[probe] WARNING ingest NOT verified — pushes report success but ` +
-                  `infra_probe_last_run_timestamp_seconds{vantage="${config.vantage}"} ` +
-                  `is not queryable at ${config.vmBaseUrl} after retrying past the ` +
-                  `search latency offset. Metrics are being dropped.`,
-          );
-        });
-      }
+      // every in-process signal still says success. So ask VM, periodically,
+      // whether the series actually exists; the scheduler owns the cadence
+      // and starts the query detached, because probing must not stall on it.
+      selfCheck.onCycle(report.delivered);
     } catch (error) {
       console.error(`[probe] cycle skipped (no heartbeat): ${message(error)}`);
     }
