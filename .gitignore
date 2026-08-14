@@ -4,3 +4,4 @@ dist/
 test/.tmp/
 node_modules/
 .scratch/
+*.local.md
