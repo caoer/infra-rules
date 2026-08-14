@@ -14,5 +14,6 @@ v0 — under construction. Consumers pin a tag: `bun add github:caoer/infra-rule
 ## Repo discipline
 
 This repository is **public**. It contains **no real fleet data**: no live CIDRs, no
-credentials, no exit IPs. Everything under `fixtures/` is synthetic, and a leak-guard
-test enforces that mechanically.
+credentials, no exit IPs. A leak-guard test (`test/no-real-data.test.ts`) enforces that
+mechanically over `fixtures/`, `test/golden/`, `src/` and this README — an address
+outside the synthetic bands fails the suite wherever it is written, comments included.

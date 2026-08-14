@@ -1,7 +1,8 @@
 /**
- * Leak guard: no real fleet data may ever be committed under `fixtures/`.
- * This is the mechanical enforcement of public-repo discipline for every
- * unit — fixtures are synthetic by test, not by honor.
+ * Leak guard: no real fleet data may ever be committed to this repo — not in
+ * fixtures, not in goldens, not in a source comment. This is the mechanical
+ * enforcement of public-repo discipline for every unit: the tree is synthetic
+ * by test, not by honor.
  *
  * Three rules, each strict by construction:
  *
@@ -26,23 +27,30 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { cidrContainsIp } from "../src/lib/cidr.ts";
 
 /**
- * Scan roots: every directory that holds committed DATA files.
+ * Scan roots: every committed path that could carry a real address, whether it
+ * is data, code or prose. Directories are walked recursively; a file entry is
+ * scanned as itself.
  *
  * `test/golden/` is in scope because a golden is fixture data that happens to
  * live under `test/` — U7 found it sitting outside the scan.
  *
- * `src/` and the rest of `test/` are covered by the separate no-real-data
- * prose sweep, because this repo is public: a real range named in a comment
- * is as published as one named in a fixture.
+ * `src/` and `README.md` are in scope because this repo is PUBLIC: a real
+ * range named in a comment, a constant or a doc example is as published as one
+ * named in a fixture — and `src/` is the directory whose real CIDRs forced the
+ * history rewrite. An earlier version of this file deferred them to a
+ * "separate no-real-data prose sweep" that did not exist, so the README's
+ * claim of mechanical enforcement was backed by nothing.
  */
 const SCAN_ROOTS = [
   join(import.meta.dir, "..", "fixtures"),
   join(import.meta.dir, "golden"),
+  join(import.meta.dir, "..", "src"),
+  join(import.meta.dir, "..", "README.md"),
 ];
 
 interface Leak {
@@ -86,18 +94,20 @@ function isRealIpv4(token: string): boolean {
   return token.split(".").every((octet) => Number(octet) <= 255);
 }
 
-function listFixtureFiles(dir: string): string[] {
-  return readdirSync(dir, { recursive: true, withFileTypes: true })
+function listFixtureFiles(root: string): string[] {
+  if (statSync(root).isFile()) return [""];
+  return readdirSync(root, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
-    .map((entry) => relative(dir, join(entry.parentPath, entry.name)))
+    .map((entry) => relative(root, join(entry.parentPath, entry.name)))
     .sort();
 }
 
 /** Every data file across every scan root, labelled by the root it came from. */
 function scannedFiles(): Array<{ label: string; path: string }> {
+  const repo = join(import.meta.dir, "..");
   return SCAN_ROOTS.flatMap((root) =>
     listFixtureFiles(root).map((file) => ({
-      label: `${relative(join(import.meta.dir, ".."), root)}/${file}`,
+      label: relative(repo, join(root, file)),
       path: join(root, file),
     })),
   );
@@ -155,6 +165,16 @@ describe("leak guard — committed data carries no real fleet data", () => {
     for (const root of SCAN_ROOTS) {
       expect(listFixtureFiles(root).length).toBeGreaterThan(0);
     }
+  });
+
+  // The gap this guard shipped with: `src/` — the directory whose real CIDRs
+  // forced the history rewrite — sat outside the scan behind a claim that a
+  // prose sweep covered it. Narrowing the roots again has to fail here.
+  test("source and README are scanned, not just data files", () => {
+    const scanned = scannedFiles().map((file) => file.label);
+    expect(scanned).toContain("README.md");
+    expect(scanned).toContain(join("src", "integrity.ts"));
+    expect(scanned.filter((file) => file.startsWith(`src${sep}`)).length).toBeGreaterThan(10);
   });
 
   // The rules themselves are tested here against inline samples, so a
