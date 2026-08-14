@@ -14,7 +14,7 @@ import type { Registry } from "../../src/schema/registry.ts";
 const ROOT = join(import.meta.dir, "..", "..");
 const FIXTURE = join(ROOT, "fixtures", "surge.json");
 const LAYOUT = join(ROOT, "fixtures", "surge-layout.json");
-const GOLDEN = join(ROOT, "fixtures", "golden", "mesh-owner.golden.dconf");
+const GOLDEN = join(ROOT, "fixtures", "golden", "surge.golden.dconf");
 
 async function loadInputs(): Promise<{ registry: Registry; layout: SurgeLayout }> {
   const registry = await loadRegistry(FIXTURE);
@@ -55,14 +55,14 @@ describe("surge renderer — tier-1 (D19)", () => {
     const { registry, layout } = await loadInputs();
     const { text } = renderSurge(registry, layout);
     expect(text).not.toContain("ghost-");
-    expect(text).not.toContain("10.224.1.100");
-    expect(text).not.toContain("10.224.2.150");
+    expect(text).not.toContain("10.98.1.100");
+    expect(text).not.toContain("10.98.2.150");
   });
 
   test("routing entries not named by the layout do not render", async () => {
     const { registry, layout } = await loadInputs();
     const { text } = renderSurge(registry, layout);
-    expect(text).not.toContain("10.230.5.0/24"); // decoy-neighbor
+    expect(text).not.toContain("10.99.5.0/24"); // decoy-neighbor
   });
 
   test("credentials appear in the full render but never survive the strip", async () => {
@@ -117,6 +117,7 @@ describe("surge renderer — loud failures", () => {
       jumpers: { east: "exit-east-1" },
       spares: ["exit-east-1"],
       proxyExtras: "tfo=true",
+      hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
       catchAlls: ["core-band"],

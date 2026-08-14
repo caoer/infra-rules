@@ -2,33 +2,33 @@
   "schemaVersion": 1,
   "snapshots": {
     "testorg": [
-      { "kind": "host", "name": "pin-e1", "mesh": "test-mesh", "easytier_ip": "10.224.1.3", "region": "east", "source": "ssh-inventory" },
-      { "kind": "host", "name": "pin-e2", "mesh": "test-mesh", "easytier_ip": "10.224.1.20", "region": "east", "source": "ssh-inventory" },
-      { "kind": "host", "name": "pin-w1", "mesh": "test-mesh", "easytier_ip": "10.224.1.1", "region": "west", "source": "ssh-inventory" },
-      { "kind": "host", "name": "pin-w2", "mesh": "test-mesh", "easytier_ip": "10.224.2.9", "region": "west", "source": "ssh-inventory" },
-      { "kind": "host", "name": "pin-w3", "mesh": "test-mesh", "easytier_ip": "10.224.10.49", "region": "west", "source": "ssh-inventory" },
-      { "kind": "host", "name": "um-a", "mesh": "test-mesh", "easytier_ip": "10.224.1.11", "source": "ssh-inventory" },
-      { "kind": "host", "name": "um-b", "mesh": "test-mesh", "easytier_ip": "10.224.2.35", "source": "ssh-inventory" },
-      { "kind": "host", "name": "um-c", "mesh": "test-mesh", "easytier_ip": "10.224.1.80", "region": "far-1", "source": "ssh-inventory" },
-      { "kind": "host", "name": "ghost-1", "mesh": "test-mesh", "easytier_ip": "10.224.1.100", "source": "mesh-overlay" },
-      { "kind": "host", "name": "ghost-2", "mesh": "test-mesh", "easytier_ip": "10.224.2.150", "source": "mesh-overlay" }
+      { "kind": "host", "name": "pin-e1", "mesh": "test-mesh", "easytier_ip": "10.98.1.3", "region": "east", "source": "ssh-inventory" },
+      { "kind": "host", "name": "pin-e2", "mesh": "test-mesh", "easytier_ip": "10.98.1.20", "region": "east", "source": "ssh-inventory" },
+      { "kind": "host", "name": "pin-w1", "mesh": "test-mesh", "easytier_ip": "10.98.1.1", "region": "west", "source": "ssh-inventory" },
+      { "kind": "host", "name": "pin-w2", "mesh": "test-mesh", "easytier_ip": "10.98.2.9", "region": "west", "source": "ssh-inventory" },
+      { "kind": "host", "name": "pin-w3", "mesh": "test-mesh", "easytier_ip": "10.98.10.49", "region": "west", "source": "ssh-inventory" },
+      { "kind": "host", "name": "um-a", "mesh": "test-mesh", "easytier_ip": "10.98.1.11", "source": "ssh-inventory" },
+      { "kind": "host", "name": "um-b", "mesh": "test-mesh", "easytier_ip": "10.98.2.35", "source": "ssh-inventory" },
+      { "kind": "host", "name": "um-c", "mesh": "test-mesh", "easytier_ip": "10.98.1.80", "region": "far-1", "source": "ssh-inventory" },
+      { "kind": "host", "name": "ghost-1", "mesh": "test-mesh", "easytier_ip": "10.98.1.100", "source": "mesh-overlay" },
+      { "kind": "host", "name": "ghost-2", "mesh": "test-mesh", "easytier_ip": "10.98.2.150", "source": "mesh-overlay" }
     ]
   },
   "hand": [
     {
       "kind": "mesh",
       "name": "test-mesh",
-      "cidr": "10.224.0.0/16",
-      "allocation": { "vocabulary": "owner-subnet", "owner": "tester", "subnet": "10.224.0.0/16" }
+      "cidr": "10.98.0.0/16",
+      "allocation": { "vocabulary": "owner-subnet", "owner": "tester", "subnet": "10.98.0.0/16" }
     },
     { "kind": "policy", "name": "mesh", "description": "overlay routing target" },
     { "kind": "proxyExit", "name": "exit-east-1", "host": "192.0.2.10", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-east" },
     { "kind": "proxyExit", "name": "exit-west-1", "host": "192.0.2.11", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-west" },
     { "kind": "proxyExit", "name": "exit-north-1", "host": "192.0.2.12", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-north" },
     { "kind": "proxyExit", "name": "exit-west-2", "host": "192.0.2.13", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-spare" },
-    { "kind": "routing", "entry": "intent", "name": "decoy-neighbor", "priority": 50, "match": { "match": "cidr", "cidr": "10.230.5.0/24" }, "policy": "mesh" },
-    { "kind": "routing", "entry": "intent", "name": "core-band", "priority": 100, "match": { "match": "cidr", "cidr": "10.224.1.0/24" }, "policy": "mesh" },
-    { "kind": "routing", "entry": "intent", "name": "portal", "priority": 110, "match": { "match": "cidr", "cidr": "10.100.14.0/24" }, "policy": "mesh" },
-    { "kind": "routing", "entry": "intent", "name": "supernet-catchall", "priority": 120, "match": { "match": "cidr", "cidr": "10.224.0.0/12" }, "policy": "mesh" }
+    { "kind": "routing", "entry": "intent", "name": "decoy-neighbor", "priority": 50, "match": { "match": "cidr", "cidr": "10.99.5.0/24" }, "policy": "mesh" },
+    { "kind": "routing", "entry": "intent", "name": "core-band", "priority": 100, "match": { "match": "cidr", "cidr": "10.98.1.0/24" }, "policy": "mesh" },
+    { "kind": "routing", "entry": "intent", "name": "portal", "priority": 110, "match": { "match": "cidr", "cidr": "10.20.14.0/24" }, "policy": "mesh" },
+    { "kind": "routing", "entry": "intent", "name": "supernet-catchall", "priority": 120, "match": { "match": "cidr", "cidr": "10.98.0.0/15" }, "policy": "mesh" }
   ]
 }

@@ -4,7 +4,7 @@
  * Renders the mesh routing unit of a Surge profile: an SS `[Proxy]` block
  * from proxyExit entities, per-host `/32` pins grouped by region, the
  * always-last catch-all ranges (D14), and a `[Host]` block mirroring the
- * overlay's magic DNS (`<name>.mesh.test`). The output replaces a hand-rolled
+ * overlay's magic DNS (`<name><hostSuffix>`). The output replaces a hand-rolled
  * per-fleet generator; its acceptance is byte-parity with that generator's
  * artifact (D19), so the line layout below is deliberately faithful to it.
  *
@@ -53,6 +53,10 @@ export const SurgeLayoutSchema = z
     spares: z.array(z.string().min(1)),
     /** Flags appended verbatim to every `[Proxy]` line. */
     proxyExtras: z.string().min(1),
+    /** DNS suffix for `[Host]` entries (the overlay's magic-DNS domain,
+     * e.g. ".example.test") — fleet-specific, so caller-supplied like every
+     * other real-world name in this contract. */
+    hostSuffix: z.string().min(2).startsWith("."),
     /** registry policy name → Surge policy-group name. */
     policyGroups: z.record(z.string().min(1), z.string().min(1)),
     /** Registry policy the `/32` pins route to. */
@@ -268,9 +272,9 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
   lines.push("");
 
   lines.push("[Host]");
-  lines.push("# Mesh magic-DNS parity (<name>.mesh.test → mesh IP)");
+  lines.push(`# Mesh magic-DNS parity (<name>${layout.hostSuffix} → mesh IP)`);
   for (const member of [...members].sort(byIp)) {
-    lines.push(`${member.name}.mesh.test = ${member.easytier_ip}`);
+    lines.push(`${member.name}${layout.hostSuffix} = ${member.easytier_ip}`);
   }
   lines.push("");
 

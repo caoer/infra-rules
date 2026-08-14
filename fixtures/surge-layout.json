@@ -3,6 +3,7 @@
   "jumpers": { "east": "exit-east-1", "west": "exit-west-1", "north": "exit-north-1" },
   "spares": ["exit-west-2"],
   "proxyExtras": "tfo=true, udp-relay=true",
+  "hostSuffix": ".mesh.test",
   "policyGroups": { "mesh": "PG_mesh" },
   "pinPolicy": "mesh",
   "catchAlls": ["core-band", "portal", "supernet-catchall"]
