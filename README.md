@@ -4,7 +4,7 @@ Org-agnostic infrastructure registry + rules engine. Bun + TypeScript + zod v4.
 
 One schema for hosts, networks, meshes, views, policies, services, routing intent and
 proxy exits; renderers that turn that registry into the config each consumer needs
-(probe manifests, sing-box `dnsRules`, DNS records, client-profile dconf) and a probe exporter
+(probe manifests, sing-box `dnsRules`, DNS records, Surge dconf) and a probe exporter
 that pushes reachability metrics to VictoriaMetrics.
 
 ## Status
