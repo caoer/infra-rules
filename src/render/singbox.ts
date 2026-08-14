@@ -24,6 +24,25 @@
  * The rank is read from the scope entity's allocation vocabulary,
  * never from hardcoded names; views whose scope entity is missing or carries
  * no allocation rank between the two.
+ *
+ * Merged files (`dnsrules-merged-<resolver>.json`): one per resolver entity,
+ * emitted after the per-view files, resolver-name-sorted. A resolver names an
+ * ORDERED view list; each service answers from the first listed view that has
+ * an answer, so precedence is computed here — where the omit semantics live —
+ * never by consumer-side file concatenation (which silently promotes the next
+ * file's answer when a name drops out of the first, and breaks the
+ * exact-before-suffix sort across the file boundary). One rule per name:
+ * shadowed lower-precedence answers are not emitted at all. The whole merged
+ * list passes through `sortDnsRules`, making the first-match invariant global
+ * for the merged consumer. Integrity (`[service-views]`,
+ * `[resolver-ambiguous]`) guarantees every multi-view name carries a declared
+ * view set, so a drop-out refuses at parse time instead of rendering a
+ * promotion.
+ *
+ * Under `--views` scoping a resolver whose views are ALL filtered out belongs
+ * to another org and is skipped; a PARTIALLY filtered resolver is a hard
+ * error — rendering a truncated precedence list would be exactly the silent
+ * fall-back this renderer exists to kill.
  */
 
 import type { Registry, Entity } from "../schema/registry.ts";
@@ -86,6 +105,7 @@ function render(registry: Registry): RenderedFile[] {
   const entities = [...Object.values(registry.snapshots).flat(), ...registry.hand];
   const views = entities.filter((entity) => entity.kind === "view");
   const services = entities.filter((entity) => entity.kind === "service");
+  const resolvers = entities.filter((entity) => entity.kind === "resolver");
   const hosts = new Map(
     entities.filter((entity) => entity.kind === "host").map((host) => [host.name, host]),
   );
@@ -131,7 +151,49 @@ function render(registry: Registry): RenderedFile[] {
     emitted,
     unit: "dnsRules",
   });
-  return files;
+
+  const viewByName = new Map(views.map((view) => [view.name, view]));
+  const mergedFiles = [...resolvers]
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .flatMap((resolver) => {
+      const present = resolver.views.filter((name) => viewByName.has(name));
+      if (present.length === 0) return []; // scoped out entirely — another org's resolver
+      if (present.length < resolver.views.length) {
+        const missing = resolver.views.filter((name) => !viewByName.has(name));
+        throw new Error(
+          `singbox: resolver "${resolver.name}" lost view(s) ${missing.join(", ")} to --views scoping ` +
+            `but kept ${present.join(", ")} — a truncated precedence list would silently change answers; ` +
+            `scope all of the resolver's views in, or none`,
+        );
+      }
+      const rules: ExactDnsRule[] = [];
+      for (const service of services) {
+        const host = hosts.get(service.host);
+        if (host === undefined) {
+          throw new Error(
+            `singbox: service "${service.name}" references missing host "${service.host}" — run validate`,
+          );
+        }
+        for (const viewName of resolver.views) {
+          const answer = answerFor(viewByName.get(viewName)!, host);
+          if (answer === undefined) continue;
+          rules.push({
+            domain: [service.dnsName],
+            action: "predefined",
+            answer: [`${service.dnsName}. IN A ${answer}`],
+          });
+          break; // first listed view with an answer wins; shadowed answers are never emitted
+        }
+      }
+      return [
+        {
+          path: `singbox/dnsrules-merged-${resolver.name}.json`,
+          value: { dnsRules: sortDnsRules(rules) },
+        },
+      ];
+    });
+
+  return [...files, ...mergedFiles];
 }
 
 export const singboxRenderer = { name: "singbox", render };

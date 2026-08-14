@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { buildFileSet } from "../../src/commands/render.ts";
 import { singboxRenderer, sortDnsRules } from "../../src/render/singbox.ts";
+import { scopeToViews } from "../../src/lib/scope.ts";
 import type { Registry } from "../../src/schema/registry.ts";
 
 const CLI = join(import.meta.dir, "..", "..", "src", "cli.ts");
@@ -14,7 +15,10 @@ const GOLDEN_DIR = join(import.meta.dir, "..", "..", "fixtures", "golden");
  * - `panel-1` is dual-homed — mesh address and an org LAN address — so its
  *   service answers differently per view (the split-horizon essence);
  * - `store-1` is mesh-only, so org views must omit it;
- * - `orgnet-hq` is a view with zero service answers (the org gateway analog).
+ * - `orgnet-hq` is a view with zero service answers (the org gateway analog);
+ * - `gw-site1` is the merged-gateway analog: site LAN answers first, mesh
+ *   answers only for names the LAN does not serve. `panel` answers in both of
+ *   its views, so it carries the exact `views` declaration integrity demands.
  */
 const registry: Registry = {
   schemaVersion: 1,
@@ -52,8 +56,16 @@ const registry: Registry = {
     { kind: "view", name: "orgnet-site1", scope: { kind: "network", network: "orgnet-site1-lan" } },
     { kind: "view", name: "orgnet-hq", scope: { kind: "network", network: "orgnet-hq-lan" } },
     { kind: "view", name: "ownermesh", scope: { kind: "mesh", mesh: "lab-mesh" } },
-    { kind: "service", name: "panel", dnsName: "panel.acme.test", host: "panel-1", port: 443 },
+    {
+      kind: "service",
+      name: "panel",
+      dnsName: "panel.acme.test",
+      host: "panel-1",
+      port: 443,
+      views: ["orgnet-site1", "ownermesh"],
+    },
     { kind: "service", name: "store", dnsName: "store.acme.test", host: "store-1", port: 8080 },
+    { kind: "resolver", name: "gw-site1", views: ["orgnet-site1", "ownermesh"] },
   ],
 };
 
@@ -91,12 +103,13 @@ describe("singbox dnsRules renderer", () => {
     expect(site1).not.toContain("store.acme.test");
   });
 
-  test("D12 file order: org-site-band views first, unallocated between, owner-subnet views last", () => {
+  test("D12 file order: org-site-band views first, unallocated between, owner-subnet views last; merged files after", () => {
     const paths = singboxRenderer.render(registry).map((file) => file.path);
     expect(paths).toEqual([
       "singbox/dnsrules-orgnet-hq.json",
       "singbox/dnsrules-orgnet-site1.json",
       "singbox/dnsrules-ownermesh.json",
+      "singbox/dnsrules-merged-gw-site1.json",
     ]);
 
     // Rank beats name: zz- (org-site-band) sorts first, aa- (owner-subnet) last, orphan between.
@@ -145,6 +158,30 @@ describe("singbox dnsRules renderer", () => {
     ]);
   });
 
+  test("a resolver with all views scoped out is another org's — skipped, not an error", () => {
+    // The real shape of the case: an org scopes the merged fleet envelope to
+    // its own views. Its own view still answers (so the collapse guard stays
+    // out of the picture); the other org's resolver must vanish, not throw.
+    const foreign: Registry = {
+      ...registry,
+      hand: [
+        ...registry.hand,
+        { kind: "host", name: "kiosk-1", networks: { "orgnet-hq-lan": { ip: "198.51.100.7" } } },
+        { kind: "service", name: "kiosk", dnsName: "kiosk.acme.test", host: "kiosk-1" },
+      ],
+    };
+    const scoped = scopeToViews(foreign, ["orgnet-hq"]);
+    const paths = singboxRenderer.render(scoped).map((file) => file.path);
+    expect(paths).toEqual(["singbox/dnsrules-orgnet-hq.json"]);
+  });
+
+  test("a resolver with only PART of its views scoped in refuses — a truncated precedence list changes answers", () => {
+    const scoped = scopeToViews(registry, ["orgnet-hq", "orgnet-site1"]);
+    expect(() => singboxRenderer.render(scoped)).toThrow(
+      /resolver "gw-site1" lost view\(s\) ownermesh/,
+    );
+  });
+
   test("a service referencing a missing host fails the render loudly", () => {
     const broken: Registry = {
       schemaVersion: 1,
@@ -155,6 +192,54 @@ describe("singbox dnsRules renderer", () => {
       ],
     };
     expect(() => singboxRenderer.render(broken)).toThrow(/missing host "ghost-1"/);
+  });
+});
+
+describe("singbox merged render (per-gateway view precedence, computed in the engine)", () => {
+  const merged = (): { dnsRules: { domain: string[]; answer: string[] }[] } =>
+    JSON.parse(rendered().get("/out/singbox/dnsrules-merged-gw-site1.json") as string);
+
+  test("golden: dnsrules-merged-gw-site1.json matches the committed golden byte-for-byte", async () => {
+    const golden = await readFile(join(GOLDEN_DIR, "singbox-merged-gw-site1.json"), "utf8");
+    expect(rendered().get("/out/singbox/dnsrules-merged-gw-site1.json")).toBe(golden);
+  });
+
+  test("a name answering in several views takes the FIRST listed view's answer", () => {
+    const panel = merged().dnsRules.filter((rule) => rule.domain[0] === "panel.acme.test");
+    expect(panel).toHaveLength(1); // one rule per name — the shadowed mesh answer is never emitted
+    expect(panel[0]!.answer).toEqual(["panel.acme.test. IN A 192.0.2.10"]);
+  });
+
+  test("a name the first view does not serve falls to the next listed view", () => {
+    const store = merged().dnsRules.filter((rule) => rule.domain[0] === "store.acme.test");
+    expect(store).toHaveLength(1);
+    expect(store[0]!.answer).toEqual(["store.acme.test. IN A 10.20.1.6"]);
+  });
+
+  test("a resolver whose views answer nothing renders a valid empty list", () => {
+    const empty: Registry = {
+      ...registry,
+      hand: [
+        ...registry.hand.filter((entity) => entity.kind !== "resolver"),
+        { kind: "resolver", name: "gw-hq", views: ["orgnet-hq"] },
+      ],
+    };
+    const files = new Map(singboxRenderer.render(empty).map((file) => [file.path, file.value]));
+    expect(files.get("singbox/dnsrules-merged-gw-hq.json")).toEqual({ dnsRules: [] });
+  });
+
+  test("the merged list is sorted as ONE list — exact rules stay ahead of suffix rules across view boundaries", () => {
+    // The per-file invariant (exact before suffix) must hold for the merged
+    // union too: a suffix rule contributed by the first view must not swallow
+    // an exact name contributed by the second (review #13's concatenation
+    // hazard). v1 emits exact rules only, so prove it at the sort seam.
+    const fromFirstView = { domain_suffix: [".acme.test"], action: "route", server: "site-dns" };
+    const fromSecondView = {
+      domain: ["store.acme.test"],
+      action: "predefined",
+      answer: ["store.acme.test. IN A 10.20.1.6"],
+    };
+    expect(sortDnsRules([fromFirstView, fromSecondView])).toEqual([fromSecondView, fromFirstView]);
   });
 });
 

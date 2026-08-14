@@ -23,6 +23,57 @@ describe("integrity — valid registry", () => {
     const { messages } = violationsOf("valid.json");
     expect(messages).toEqual([]);
   });
+
+  test("valid-resolver.json — resolver + exact declaration + undeclared single-view service — produces zero violations", () => {
+    const { messages } = violationsOf("valid-resolver.json");
+    expect(messages).toEqual([]);
+  });
+});
+
+describe("integrity — resolver and service view declarations", () => {
+  test("[resolver-views] a duplicate listing and a dangling view name are each violations", () => {
+    const { messages, paths } = violationsOf("invalid-resolver-views.json");
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toStartWith("[resolver-views]");
+    expect(messages[0]).toContain('view "office" is listed twice');
+    expect(messages[1]).toStartWith("[resolver-views]");
+    expect(messages[1]).toContain('view "ghost-view" is not a declared view entity');
+    expect(paths).toEqual(["hand[2].views[1]", "hand[2].views[2]"]);
+  });
+
+  test("[service-views] the drop-out guard: a declared view with no answer refuses instead of promoting another view's answer", () => {
+    const { messages, paths } = violationsOf("invalid-service-views-dropout.json");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toStartWith("[service-views]");
+    expect(messages[0]).toContain('declared view "office" has no answer for host "web-1"');
+    expect(paths[0]).toBe("hand[2].views[0]");
+  });
+
+  test("[service-views] declarations are exact: a view that answers but is not declared is a violation", () => {
+    const { messages, paths } = violationsOf("invalid-service-views-undeclared-gain.json");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toStartWith("[service-views]");
+    expect(messages[0]).toContain('view "office" answers for host "web-1" but is not declared');
+    expect(paths[0]).toBe("hand[2].views");
+  });
+
+  test("[service-views] a declared name that is not a view entity is a violation, reported once", () => {
+    const { messages, paths } = violationsOf("invalid-service-views-dangling.json");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toStartWith("[service-views]");
+    expect(messages[0]).toContain('declared view "ghost-view" is not a declared view entity');
+    expect(paths[0]).toBe("hand[2].views[1]");
+  });
+
+  test("[resolver-ambiguous] an undeclared service answering in two views of one resolver demands a declaration", () => {
+    const { messages, paths } = violationsOf("invalid-resolver-ambiguous.json");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toStartWith("[resolver-ambiguous]");
+    expect(messages[0]).toContain('service "grafana"');
+    expect(messages[0]).toContain('resolver "gw-alpha"');
+    expect(messages[0]).toContain("office, vpn");
+    expect(paths[0]).toBe("hand[3]");
+  });
 });
 
 describe("integrity — each check catches its violation class", () => {

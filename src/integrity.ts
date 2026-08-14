@@ -21,6 +21,7 @@ import {
 } from "./lib/cidr.ts";
 import type { Entity, Registry } from "./schema/registry.ts";
 import { RegistrySchema } from "./schema/registry.ts";
+import { answerFor } from "./schema/view.ts";
 
 /**
  * Ranges retired from a fleet: appearing anywhere as live data is a hard
@@ -165,6 +166,128 @@ function checkHostMembershipRefs(
         report(
           [...located.path, "networks", networkName],
           `[network-ref] ${ident(located)}: network "${networkName}" is not a declared network entity`,
+        );
+      }
+    }
+  }
+}
+
+/** resolver.views → declared view entities, no duplicates in the list. */
+function checkResolverViews(all: Located[], groups: Map<string, Located[]>, report: Reporter): void {
+  for (const located of all) {
+    if (located.entity.kind !== "resolver") continue;
+    const seen = new Set<string>();
+    located.entity.views.forEach((viewName, i) => {
+      if (seen.has(viewName)) {
+        report(
+          [...located.path, "views", i],
+          `[resolver-views] ${ident(located)}: view "${viewName}" is listed twice — precedence is the list order, a repeat is a contradiction`,
+        );
+      }
+      seen.add(viewName);
+      if (!groups.has(`view\u0000${viewName}`)) {
+        report(
+          [...located.path, "views", i],
+          `[resolver-views] ${ident(located)}: view "${viewName}" is not a declared view entity`,
+        );
+      }
+    });
+  }
+}
+
+/**
+ * The set of views that answer for a service's host, computed the one lawful
+ * way (`answerFor`). Undefined when the host reference does not resolve —
+ * `[host-ref]` already reports that; these checks stay silent to avoid a
+ * second issue for the same root cause.
+ */
+function answerableViews(
+  entity: Entity & { kind: "service" },
+  all: Located[],
+  groups: Map<string, Located[]>,
+): Set<string> | undefined {
+  const host = groups.get(`host\u0000${entity.host}`)?.[0]?.entity;
+  if (host === undefined || host.kind !== "host") return undefined;
+  const views = new Set<string>();
+  for (const located of all) {
+    if (located.entity.kind !== "view") continue;
+    if (answerFor(located.entity, host) !== undefined) views.add(located.entity.name);
+  }
+  return views;
+}
+
+/**
+ * A `service.views` declaration is EXACT: the declared set must equal the
+ * computed answerable set. A declared view that no longer answers is the
+ * drop-out guard — the whole point is that a name losing its primary answer
+ * refuses fleet-wide instead of silently promoting another view's answer at
+ * a gateway. An answering view left undeclared is the same drift in the
+ * other direction.
+ */
+function checkServiceViewDeclarations(
+  all: Located[],
+  groups: Map<string, Located[]>,
+  report: Reporter,
+): void {
+  for (const located of all) {
+    if (located.entity.kind !== "service" || located.entity.views === undefined) continue;
+    const service = located.entity;
+    const answerable = answerableViews(service, all, groups);
+    if (answerable === undefined) continue; // dangling host — [host-ref] owns it
+
+    service.views!.forEach((viewName, i) => {
+      if (!groups.has(`view\u0000${viewName}`)) {
+        report(
+          [...located.path, "views", i],
+          `[service-views] ${ident(located)}: declared view "${viewName}" is not a declared view entity`,
+        );
+      } else if (!answerable.has(viewName)) {
+        report(
+          [...located.path, "views", i],
+          `[service-views] ${ident(located)}: declared view "${viewName}" has no answer for host "${service.host}" — the name would silently drop out of that vantage (or promote another view's answer at a merged gateway); fix the host's address data or the declaration`,
+        );
+      }
+    });
+
+    const declared = new Set(service.views);
+    for (const viewName of [...answerable].sort()) {
+      if (!declared.has(viewName)) {
+        report(
+          [...located.path, "views"],
+          `[service-views] ${ident(located)}: view "${viewName}" answers for host "${service.host}" but is not declared — declarations are exact; add it or remove the host's address on that vantage`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * A name answering in two or more views of ONE resolver is a precedence
+ * decision. Undeclared, that decision would be made silently by list order;
+ * with a declaration, both future drift directions are `[service-views]`
+ * refusals. So the ambiguity itself demands the declaration.
+ */
+function checkResolverAmbiguity(
+  all: Located[],
+  groups: Map<string, Located[]>,
+  report: Reporter,
+): void {
+  const resolvers = all.filter(
+    (located): located is Located & { entity: Entity & { kind: "resolver" } } =>
+      located.entity.kind === "resolver",
+  );
+  if (resolvers.length === 0) return;
+
+  for (const located of all) {
+    if (located.entity.kind !== "service" || located.entity.views !== undefined) continue;
+    const answerable = answerableViews(located.entity, all, groups);
+    if (answerable === undefined) continue;
+    for (const resolver of resolvers) {
+      const overlapping = resolver.entity.views.filter((viewName) => answerable.has(viewName));
+      if (overlapping.length >= 2) {
+        report(
+          [...located.path],
+          `[resolver-ambiguous] ${ident(located)}: answers in ${overlapping.length} views of resolver "${resolver.entity.name}" (${overlapping.join(", ")}) but declares none — add service.views so the precedence pick is declared intent, not accident`,
         );
       }
     }
@@ -360,6 +483,9 @@ export function checkIntegrity(registry: Registry, ctx: z.RefinementCtx): void {
   checkServiceHostRefs(all, groups, report);
   checkPolicyRefs(all, groups, report);
   checkHostMembershipRefs(all, groups, report);
+  checkResolverViews(all, groups, report);
+  checkServiceViewDeclarations(all, groups, report);
+  checkResolverAmbiguity(all, groups, report);
   checkDnsNamesUnique(all, report);
   checkIpsInsideCidrs(all, groups, report);
   checkAllocationsDisjoint(all, report);

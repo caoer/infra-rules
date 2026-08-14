@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {
+    "acme": [
+      {
+        "kind": "host",
+        "name": "web-1",
+        "mesh": "mesh-a",
+        "easytier_ip": "10.20.1.7",
+        "networks": {
+          "lan-alpha": {
+            "ip": "192.0.2.10"
+          }
+        }
+      },
+      {
+        "kind": "host",
+        "name": "jump-1",
+        "mesh": "mesh-a",
+        "easytier_ip": "10.20.1.8"
+      },
+      {
+        "kind": "mesh",
+        "name": "mesh-a",
+        "cidr": "10.20.0.0/14"
+      },
+      {
+        "kind": "network",
+        "name": "lan-alpha",
+        "cidr": "192.0.2.0/24"
+      }
+    ]
+  },
+  "hand": [
+    {
+      "kind": "view",
+      "name": "vpn",
+      "scope": {
+        "kind": "mesh",
+        "mesh": "mesh-a"
+      }
+    },
+    {
+      "kind": "view",
+      "name": "office",
+      "scope": {
+        "kind": "network",
+        "network": "lan-alpha"
+      }
+    },
+    {
+      "kind": "service",
+      "name": "grafana",
+      "dnsName": "grafana.acme.test",
+      "host": "web-1",
+      "views": [
+        "vpn"
+      ]
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import { MeshSchema } from "./mesh.ts";
 import { NetworkSchema } from "./network.ts";
 import { PolicySchema } from "./policy.ts";
 import { ProxyExitSchema } from "./proxy-exit.ts";
+import { ResolverSchema } from "./resolver.ts";
 import { RoutingSchema } from "./routing.ts";
 import { ServiceSchema } from "./service.ts";
 import { ViewSchema } from "./view.ts";
@@ -18,6 +19,7 @@ export const EntitySchema = z.discriminatedUnion("kind", [
   ServiceSchema,
   RoutingSchema,
   ProxyExitSchema,
+  ResolverSchema,
 ]);
 
 export type Entity = z.infer<typeof EntitySchema>;
