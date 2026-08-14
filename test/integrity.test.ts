@@ -109,6 +109,25 @@ describe("integrity — each check catches its violation class", () => {
     ).toBe(true);
   });
 
+  test("[retired-range] data-driven ranges from the envelope's retiredRanges field enforce too", () => {
+    const { messages } = violationsOf("invalid-data-retired-range.json");
+    expect(messages).toHaveLength(3);
+    for (const message of messages) expect(message).toStartWith("[retired-range]");
+    for (const message of messages) expect(message).toContain("10.30.99.0/24");
+    expect(messages.some((m) => m.includes('network "sunset-lan"'))).toBe(true);
+    expect(messages.some((m) => m.includes("easytier_ip 10.30.99.5"))).toBe(true);
+    expect(messages.some((m) => m.includes('routing "zombie-route"'))).toBe(true);
+  });
+
+  test("a declared retiredRanges field with no violators parses clean", () => {
+    const data = JSON.parse(readFileSync(fixture("valid.json"), "utf8"));
+    const result = RegistryWithIntegritySchema.safeParse({
+      ...data,
+      retiredRanges: ["10.30.99.0/24"],
+    });
+    expect(result.success).toBe(true);
+  });
+
   test("[dup-entity] D4: same entity in snapshot and hand — both sources named, anchored on hand", () => {
     const { messages, paths } = violationsOf("invalid-duplicate-entity.json");
     expect(messages).toHaveLength(1);
