@@ -23,16 +23,21 @@ import type { Entity, Registry } from "./schema/registry.ts";
 import { RegistrySchema } from "./schema/registry.ts";
 
 /**
- * Ranges retired from the fleet: appearing anywhere as live data is a hard
- * failure (plan §2.2).
+ * Ranges retired from a fleet: appearing anywhere as live data is a hard
+ * failure.
  *
- * Deliberately NOT listed:
- * - `10.98.249.0/24` — retirement unconfirmed (0.55); this comment is its
- *   only representation, it must never hard-fail.
- * - `10.98.146.0/24` — an inventory label for physical boxes, never
- *   routable. Not retired address space; it simply must not be declared as
- *   an allocation. Representable only as a non-routable annotation
- *   (e.g. entity `description`), which no check inspects.
+ * PLACEHOLDER VALUES. This repo is public and org-agnostic, so it carries
+ * fixture-space ranges only — a real retired range named here would publish
+ * the very inventory detail the registry keeps private. An operator enforcing
+ * a real fleet supplies the real ranges from their private registry data.
+ *
+ * Two classes deliberately stay OUT of any such list, whatever the values:
+ * - A range whose retirement is unconfirmed. It must never hard-fail, because
+ *   a false positive blocks live data that is still legitimately in use.
+ * - An inventory label for physical boxes that is never routable. That is not
+ *   retired address space; it simply must not be declared as an allocation,
+ *   and it is representable only as a non-routable annotation (e.g. entity
+ *   `description`), which no check inspects.
  */
 export const RETIRED_RANGES = ["10.98.144.0/24", "10.98.192.0/20"] as const;
 

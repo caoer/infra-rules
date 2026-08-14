@@ -11,10 +11,10 @@ const GOLDEN_DIR = join(import.meta.dir, "..", "..", "fixtures", "golden");
 
 /**
  * Synthetic split-horizon fleet (no real CIDRs, names, or addresses):
- * - `panel-1` is dual-homed — mesh address and a cos LAN address — so its
+ * - `panel-1` is dual-homed — mesh address and an org LAN address — so its
  *   service answers differently per view (the split-horizon essence);
- * - `store-1` is mesh-only, so cos views must omit it;
- * - `orgnet-hq` is a view with zero service answers (the org-hq-gw analog).
+ * - `store-1` is mesh-only, so org views must omit it;
+ * - `orgnet-hq` is a view with zero service answers (the org gateway analog).
  */
 const registry: Registry = {
   schemaVersion: 1,
@@ -91,7 +91,7 @@ describe("singbox dnsRules renderer", () => {
     expect(site1).not.toContain("store.acme.test");
   });
 
-  test("D12 file order: cos views first, unallocated between, owner-mesh views last", () => {
+  test("D12 file order: org-site-band views first, unallocated between, owner-subnet views last", () => {
     const paths = singboxRenderer.render(registry).map((file) => file.path);
     expect(paths).toEqual([
       "singbox/dnsrules-orgnet-hq.json",
@@ -99,7 +99,7 @@ describe("singbox dnsRules renderer", () => {
       "singbox/dnsrules-ownermesh.json",
     ]);
 
-    // Rank beats name: zz- (cos) sorts first, aa- (owner-mesh) last, orphan between.
+    // Rank beats name: zz- (org-site-band) sorts first, aa- (owner-subnet) last, orphan between.
     const ranked: Registry = {
       schemaVersion: 1,
       snapshots: {},
@@ -117,13 +117,13 @@ describe("singbox dnsRules renderer", () => {
           allocation: { vocabulary: "owner-subnet", owner: "zt-lab", subnet: "198.51.100.0/25" },
         },
         { kind: "network", name: "mm-net", cidr: "203.0.113.0/25" },
-        { kind: "view", name: "zz-cos", scope: { kind: "network", network: "zz-net" } },
+        { kind: "view", name: "zz-org", scope: { kind: "network", network: "zz-net" } },
         { kind: "view", name: "aa-owner", scope: { kind: "network", network: "aa-net" } },
         { kind: "view", name: "mm-orphan", scope: { kind: "network", network: "mm-net" } },
       ],
     };
     expect(singboxRenderer.render(ranked).map((file) => file.path)).toEqual([
-      "singbox/dnsrules-zz-cos.json",
+      "singbox/dnsrules-zz-org.json",
       "singbox/dnsrules-mm-orphan.json",
       "singbox/dnsrules-aa-owner.json",
     ]);

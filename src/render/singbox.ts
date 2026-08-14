@@ -3,9 +3,8 @@
  *
  * Emits one file per view — `singbox/dnsrules-<view>.json`, body
  * `{ dnsRules: [...] }` — for the existing gateway contract option
- * `osf….dnsRules` ("Extra DNS rules inserted before the tun-in catch-all",
- * the gateway contract option). Ordering against the
- * catch-all is owned by that contract; this renderer owns only the order
+ * ("Extra DNS rules inserted before the tun-in catch-all"). Ordering against
+ * the catch-all is owned by that contract; this renderer owns only the order
  * inside its own list.
  *
  * Derivation (v1): service entities only. Each service whose host has an
@@ -20,9 +19,9 @@
  * exact answer. v1 emits exact rules only, but every rule passes through
  * `sortDnsRules`, so future suffix emission inherits the invariant.
  *
- * D12 file order: cos views (`org-site-band` allocation) first, owner-mesh views
- * (`owner-subnet`) last — greenfield gateways ahead of the live 44-entry
- * surface. The rank is read from the scope entity's allocation vocabulary,
+ * D12 file order: `org-site-band` views first, `owner-subnet` views last —
+ * greenfield gateways ahead of the established surface.
+ * The rank is read from the scope entity's allocation vocabulary,
  * never from hardcoded names; views whose scope entity is missing or carries
  * no allocation rank between the two.
  */
@@ -62,7 +61,7 @@ export function sortDnsRules<T extends JsonObject>(rules: readonly T[]): T[] {
   return [...exact.sort(byPattern), ...suffix.sort(byPattern)];
 }
 
-/** D12 rank: cos vocabulary → 0, unallocated/unknown → 1, owner-mesh vocabulary → 2. */
+/** D12 rank: `org-site-band` → 0, unallocated/unknown → 1, `owner-subnet` → 2. */
 function viewRank(view: View, entities: readonly Entity[]): number {
   const scope = view.scope;
   const scopeEntity = entities.find((entity) =>

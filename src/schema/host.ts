@@ -12,13 +12,11 @@ import { z } from "zod";
  *
  * `region` is a PROXIMITY LABEL and may appear on ANY host.
  *
- * It was originally gated to jumper/exit roles, from a carried finding that
- * observed region on jumper data and read that as a rule. The the inventory repo
- * inventory disproves it: ordinary bare-metal hosts carry `region = "east-1"`,
- * `"west-1"`, `"east-2"`, `"north-1"` beside `location`, with no roles field at all
- * (the inventory's bare-metal group). The gate made the live client
- * profile's region-grouped host pins underivable from the registry — the
- * data existed and the schema refused it.
+ * It was originally gated to jumper/exit roles, from a finding that observed
+ * region on jumper data and read that as a rule. Real inventories disprove
+ * it: ordinary hosts carry a region label beside `location`, with no roles
+ * field at all. The gate made region-grouped host pins underivable from the
+ * registry — the data existed and the schema refused it.
  *
  * `source` records WHICH exporter path produced a snapshot entity, so a
  * renderer reproducing an existing artifact byte-for-byte can select the
@@ -29,17 +27,17 @@ import { z } from "zod";
 /**
  * Canonical `source` values.
  *
- * This string is a CONTRACT between two units that never speak directly: the
- * the inventory repo data exporter writes it, and the client-profile renderer filters on it. A
+ * This string is a CONTRACT between two units that never speak directly: a
+ * data exporter writes it, and a client-profile renderer filters on it. A
  * disagreement ("ssh_inventory" vs "ssh-inventory") makes the filter select
  * nothing, and a renderer that silently emits an empty host set is the exact
  * failure this whole design exists to prevent. Both sides import from here.
  */
 export const HOST_SOURCE = {
-  /** Hosts from the SSH inventory (`the SSH inventory`) — the set
-   * `the legacy mesh generator` evaluated, i.e. the byte-identity set. */
+  /** Hosts from the SSH inventory — the set a legacy generator evaluated,
+   * i.e. the byte-identity set a re-render must reproduce. */
   sshInventory: "ssh-inventory",
-  /** Hosts contributed by the mesh.nix overlay; in the registry, not in the
+  /** Hosts contributed by the mesh overlay; in the registry, but not in the
    * pre-cutover client profile. */
   meshOverlay: "mesh-overlay",
 } as const;
@@ -64,7 +62,7 @@ export const HostSchema = z
     /** Producing export path, e.g. "ssh-inventory" or "mesh-overlay".
      * Set by data exporters; absent on hand entities. */
     source: z.string().min(1).optional(),
-    /** Source-fidelity fields (the org vocabulary); no v1 renderer reads them. */
+    /** Source-fidelity fields (org-hierarchy vocabulary); no v1 renderer reads them. */
     site: z.string().optional(),
     hypervisor: z.string().optional(),
     resources: z.unknown().optional(),

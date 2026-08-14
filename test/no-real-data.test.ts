@@ -5,19 +5,20 @@
  *
  * Three rules, each strict by construction:
  *
- * 1. LIVE FLEET CIDRS — any `10.97.*`, `10.96.*`, `10.95.*` occurrence
- *    fails, in any syntax (address, CIDR, prose).
+ * 1. ADDRESS SPACE IS ALLOW-LISTED, NEVER DENY-LISTED. Fixture data may only
+ *    use the synthetic bands and documentation ranges in `ALLOWED_RANGES`.
+ *    Every other address fails, including all of RFC1918 outside the fixture
+ *    bands. A deny-list would have to name the real fleet ranges to ban them,
+ *    which writes exactly the data this repo must not carry — and it would
+ *    still miss any range nobody thought to list.
  *
  * 2. PASSWORDS — every password value, in JSON (`"password": "…"`) or
  *    key=value form (`password=…`), must start with `fake-`. There is no
  *    other placeholder spelling; an allowlist of one prefix cannot be
  *    argued with.
  *
- * 3. PUBLIC IPS — every IPv4-shaped token must sit in private, loopback,
- *    link-local, CGNAT, documentation (TEST-NET-1/2/3), benchmarking,
- *    "this network", or reserved-Class-E space. Known exit IPs are public
- *    unicast addresses by definition, so banning ALL public unicast space
- *    blocks every one of them — without writing the real IPs into this
+ * 3. The same allow-list blocks public unicast space, so real proxy-exit IPs
+ *    cannot appear either — without writing a single real address into this
  *    public file, and without a deny-list a new exit could dodge.
  *
  * The scan is recursive and extension-agnostic so future units' fixture
@@ -33,11 +34,11 @@ import { cidrContainsIp } from "../src/lib/cidr.ts";
  * Scan roots: every directory that holds committed DATA files.
  *
  * `test/golden/` is in scope because a golden is fixture data that happens to
- * live under `test/` — U7 found it sitting outside the scan. The rest of
- * `test/` and all of `src/` stay out on purpose: they carry prose about the
- * fleet (a comment explaining why `10.96.0.0/14` sits inside `10.88.0.0/12`
- * is documentation, not a leak), so scanning them would train people to
- * weaken the rules. Data directories only, and no exceptions inside them.
+ * live under `test/` — U7 found it sitting outside the scan.
+ *
+ * `src/` and the rest of `test/` are covered by the separate no-real-data
+ * prose sweep, because this repo is public: a real range named in a comment
+ * is as published as one named in a fixture.
  */
 const SCAN_ROOTS = [
   join(import.meta.dir, "..", "fixtures"),
@@ -51,22 +52,26 @@ interface Leak {
   match: string;
 }
 
-const LIVE_FLEET_PREFIX = /\b10\.(?:56|60|61)\./;
-
 const PASSWORD_FORMS = [
   /"password"\s*:\s*"([^"]*)"/g, // JSON field
   /\bpassword\s*=\s*([^\s,"']+)/gi, // key=value (dconf/ini/url styles)
 ];
 
-/** Address space fixture data may use. Everything else is public unicast —
- * the space real exit IPs live in — and fails the scan. */
+/**
+ * The ONLY address space fixture data may use. Everything else fails — real
+ * fleet ranges, real LAN ranges, and public unicast alike.
+ *
+ * The RFC1918 entries are deliberately narrow synthetic bands, not the whole
+ * private space: `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16` are where
+ * real inventories actually live, so allowing them wholesale would let real
+ * data in through the front door.
+ */
 const ALLOWED_RANGES = [
-  "10.0.0.0/8", // RFC1918 (rule 1 carves out the live fleet bands)
-  "172.16.0.0/12", // RFC1918
-  "192.168.0.0/16", // RFC1918
+  "10.98.0.0/15", // synthetic fixture band (10.98–10.99)
+  "10.20.0.0/14", // synthetic CIDR-math band
+  "10.30.0.0/16", // synthetic CIDR-math band
   "127.0.0.0/8", // loopback
   "169.254.0.0/16", // link-local
-  "100.64.0.0/10", // CGNAT
   "192.0.2.0/24", // TEST-NET-1
   "198.51.100.0/24", // TEST-NET-2
   "203.0.113.0/24", // TEST-NET-3
@@ -99,15 +104,6 @@ function scannedFiles(): Array<{ label: string; path: string }> {
 }
 
 function scanLine(file: string, line: string, lineNo: number, leaks: Leak[]): void {
-  if (LIVE_FLEET_PREFIX.test(line)) {
-    leaks.push({
-      file,
-      line: lineNo,
-      rule: "live-fleet-cidr",
-      match: line.match(LIVE_FLEET_PREFIX)![0],
-    });
-  }
-
   for (const form of PASSWORD_FORMS) {
     form.lastIndex = 0;
     for (const match of line.matchAll(form)) {
@@ -127,7 +123,12 @@ function scanLine(file: string, line: string, lineNo: number, leaks: Leak[]): vo
     const token = match[0];
     if (!isRealIpv4(token)) continue; // e.g. 999.1.1.1 — not an address
     if (!ALLOWED_RANGES.some((range) => cidrContainsIp(range, token))) {
-      leaks.push({ file, line: lineNo, rule: "public-ip (possible exit IP)", match: token });
+      leaks.push({
+        file,
+        line: lineNo,
+        rule: "address-outside-fixture-space",
+        match: token,
+      });
     }
   }
 }
@@ -142,7 +143,7 @@ function scanFixtures(): Leak[] {
 }
 
 describe("leak guard — committed data carries no real fleet data", () => {
-  test("no live fleet CIDR, no real password, no public IP in any scanned data file", () => {
+  test("every address sits in fixture space, every password is a placeholder", () => {
     const leaks = scanFixtures().map(
       (leak) => `${leak.file}:${leak.line} [${leak.rule}] ${leak.match}`,
     );
@@ -165,18 +166,23 @@ describe("leak guard — committed data carries no real fleet data", () => {
       return leaks.map((leak) => leak.rule);
     };
 
-    expect(catches('"cidr": "10.96.0.0/14"')).toContainEqual("live-fleet-cidr");
-    expect(catches("addr 10.97.1.2 up")).toContainEqual("live-fleet-cidr");
-    expect(catches("edge 10.95.3.0/24")).toContainEqual("live-fleet-cidr");
-    expect(catches('"ip": "110.97.1.2"')).not.toContainEqual("live-fleet-cidr"); // word boundary
+    // Any 10-space outside the synthetic bands fails, so a real fleet range
+    // is caught without this file ever naming one.
+    expect(catches('"cidr": "10.1.0.0/14"')).toContainEqual("address-outside-fixture-space");
+    expect(catches("addr 10.77.1.2 up")).toContainEqual("address-outside-fixture-space");
+    // Whole-RFC1918 space is not a free pass either.
+    expect(catches('"ip": "192.168.1.10"')).toContainEqual("address-outside-fixture-space");
+    expect(catches('"ip": "172.16.4.2"')).toContainEqual("address-outside-fixture-space");
 
     expect(catches('"password": "hunter2"').join()).toContain("password-not-placeholder");
     expect(catches("password=s3cret,method=aes").join()).toContain("password-not-placeholder");
     expect(catches('"password": "fake-fixture-password"')).toEqual([]);
     expect(catches("password=fake-golden-pw")).toEqual([]);
 
-    expect(catches('"host": "142.250.80.14"').join()).toContain("public-ip");
+    // Public unicast (the space real exit IPs live in) still fails.
+    expect(catches('"host": "142.250.80.14"')).toContainEqual("address-outside-fixture-space");
     expect(catches('"host": "203.0.113.7"')).toEqual([]); // TEST-NET-3 stays legal
+    expect(catches('"ip": "10.99.1.10"')).toEqual([]); // synthetic band stays legal
     expect(catches("v 999.1.1.1 is no address")).toEqual([]);
     expect(catches("version 1.3.14 ok")).toEqual([]);
   });

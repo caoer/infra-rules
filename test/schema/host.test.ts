@@ -30,11 +30,10 @@ describe("HostSchema", () => {
   });
 
   /**
-   * region was originally gated to jumper/exit roles. The the inventory repo inventory
-   * disproves that: ordinary bare-metal hosts carry region = "east-1"/"west-1"/
-   * "east-2"/"north-1" with no roles field at all. The gate made the live client
-   * profile's region-grouped host pins underivable — the data existed and
-   * the schema refused it.
+   * region was originally gated to jumper/exit roles. Real inventories
+   * disprove that: ordinary hosts carry a region label with no roles field
+   * at all. The gate made region-grouped host pins underivable — the data
+   * existed and the schema refused it.
    */
   test("region is a proximity label and is accepted on ANY host", () => {
     expect(HostSchema.safeParse({ ...base, region: "east-1" }).success).toBe(true);
@@ -52,7 +51,7 @@ describe("HostSchema", () => {
 });
 
 /**
- * `source` is a contract between the the inventory repo exporter (writer) and the client-profile
+ * `source` is a contract between a data exporter (writer) and a client-profile
  * renderer (filter). If the two disagree on the literal, the filter selects
  * nothing and the renderer emits an empty host set — silent, and exactly the
  * failure the field was added to prevent. Pinning the values here means both

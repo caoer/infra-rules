@@ -29,7 +29,7 @@ describe("NetworkSchema", () => {
 });
 
 describe("AllocationSchema — dual vocabularies, never conflated", () => {
-  test("org-site-band (the org) parses", () => {
+  test("org-site-band parses", () => {
     expect(
       AllocationSchema.safeParse({
         vocabulary: "org-site-band",
@@ -40,7 +40,7 @@ describe("AllocationSchema — dual vocabularies, never conflated", () => {
     ).toBe(true);
   });
 
-  test("owner-subnet (owner-mesh) parses", () => {
+  test("owner-subnet parses", () => {
     expect(
       AllocationSchema.safeParse({
         vocabulary: "owner-subnet",
