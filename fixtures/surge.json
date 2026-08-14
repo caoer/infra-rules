@@ -18,8 +18,8 @@
     {
       "kind": "mesh",
       "name": "test-mesh",
-      "cidr": "10.98.0.0/16",
-      "allocation": { "vocabulary": "owner-subnet", "owner": "tester", "subnet": "10.98.0.0/16" }
+      "cidr": "10.98.0.0/18",
+      "allocation": { "vocabulary": "owner-subnet", "owner": "tester", "subnet": "10.98.0.0/18" }
     },
     { "kind": "policy", "name": "mesh", "description": "overlay routing target" },
     { "kind": "proxyExit", "name": "exit-east-1", "host": "192.0.2.10", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-east" },
@@ -29,6 +29,6 @@
     { "kind": "routing", "entry": "intent", "name": "decoy-neighbor", "priority": 50, "match": { "match": "cidr", "cidr": "10.99.5.0/24" }, "policy": "mesh" },
     { "kind": "routing", "entry": "intent", "name": "core-band", "priority": 100, "match": { "match": "cidr", "cidr": "10.98.1.0/24" }, "policy": "mesh" },
     { "kind": "routing", "entry": "intent", "name": "portal", "priority": 110, "match": { "match": "cidr", "cidr": "10.20.14.0/24" }, "policy": "mesh" },
-    { "kind": "routing", "entry": "intent", "name": "supernet-catchall", "priority": 120, "match": { "match": "cidr", "cidr": "10.98.0.0/15" }, "policy": "mesh" }
+    { "kind": "routing", "entry": "intent", "name": "supernet-catchall", "priority": 120, "match": { "match": "cidr", "cidr": "10.98.0.0/17" }, "policy": "mesh" }
   ]
 }

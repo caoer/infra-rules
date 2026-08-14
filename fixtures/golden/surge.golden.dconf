@@ -11,7 +11,7 @@ IP-CIDR,10.98.10.49/32,PG_mesh,no-resolve // pin-w3
 
 IP-CIDR,10.98.1.0/24,PG_mesh,no-resolve
 IP-CIDR,10.20.14.0/24,PG_mesh,no-resolve
-IP-CIDR,10.98.0.0/15,PG_mesh,no-resolve
+IP-CIDR,10.98.0.0/17,PG_mesh,no-resolve
 
 [Host]
 pin-w1.mesh.test = 10.98.1.1

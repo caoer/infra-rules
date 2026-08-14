@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { runRender } from "../src/commands/render.ts";
 import { runDiff } from "../src/commands/diff.ts";
 import type { Renderer } from "../src/render/index.ts";
-import type { Registry } from "../src/schema/registry.ts";
+import { RegistrySchema, type Registry } from "../src/schema/registry.ts";
+import { RegistryWithIntegritySchema } from "../src/integrity.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -130,6 +131,39 @@ describe("render --produced (stale-artifact detection for consumers)", () => {
     const onDisk = [...new Bun.Glob("*.json").scanSync(outDir)].sort();
     expect(onDisk).toEqual(["hosts.json", "stale.json"]);
     expect(onDisk.filter((f) => !produced.includes(f))).toEqual(["stale.json"]);
+  });
+});
+
+/**
+ * INTEGRITY AT THE WRITE BOUNDARY. `validate` was the only command parsing
+ * with the integrity refinements, so every command that WRITES artifacts —
+ * including the one that writes credentials — skipped retired-range,
+ * duplicate-entity and dangling-ref checks. The guard has to fire on the
+ * writers, and it has to decline before anything reaches disk.
+ */
+describe("render commands refuse an integrity-violating registry", () => {
+  const invalid = join(import.meta.dir, "..", "fixtures", "invalid-retired-range.json");
+  const layout = join(import.meta.dir, "..", "fixtures", "surge-layout.json");
+
+  test("render declines and writes nothing", async () => {
+    expect(await cli("render", "--registry", invalid, "--out", outDir)).toBe(2);
+    expect(await Bun.file(outDir).exists()).toBe(false);
+  });
+
+  test("diff declines", async () => {
+    expect(await cli("diff", "--registry", invalid, "--out", outDir)).toBe(2);
+  });
+
+  test("render-surge declines and writes no credential file", async () => {
+    const out = join(dir, "surge.dconf");
+    expect(await cli("render-surge", "--registry", invalid, "--layout", layout, "--out", out)).toBe(2);
+    expect(await Bun.file(out).exists()).toBe(false);
+  });
+
+  test("the same registry still parses under the bare shape schema — the refinement is what refuses", async () => {
+    const data = JSON.parse(await Bun.file(invalid).text());
+    expect(RegistrySchema.safeParse(data).success).toBe(true);
+    expect(RegistryWithIntegritySchema.safeParse(data).success).toBe(false);
   });
 });
 

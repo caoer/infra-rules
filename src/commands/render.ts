@@ -8,15 +8,21 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
-import { RegistrySchema, type Registry } from "../schema/registry.ts";
+import { type Registry } from "../schema/registry.ts";
+import { RegistryWithIntegritySchema } from "../integrity.ts";
 import { canonicalJson, stampHeader } from "../lib/canonical.ts";
 import { writeAllOrNothing, writeFileAtomic, type FileSet } from "../lib/atomic-write.ts";
 import { renderers as registeredRenderers, type Renderer } from "../render/index.ts";
 import { scopeToViews } from "../lib/scope.ts";
 
+/**
+ * Every command that writes artifacts parses with the integrity checks on:
+ * retired-range hard-fail, duplicate entities and dangling refs must block a
+ * render, not just a `validate` run.
+ */
 export async function loadRegistry(path: string): Promise<Registry> {
   const text = await readFile(path, "utf8");
-  return RegistrySchema.parse(JSON.parse(text));
+  return RegistryWithIntegritySchema.parse(JSON.parse(text));
 }
 
 /** Rejects paths that would escape the output root or collide across renderers. */
