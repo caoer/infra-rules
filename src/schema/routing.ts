@@ -36,6 +36,19 @@ export const RoutingIntentSchema = z.strictObject({
   /** Policy entity reference, by name. */
   policy: z.string().min(1),
   priority: z.number().int().nonnegative(),
+  /**
+   * Mesh entity reference, by name: the overlay whose address space this
+   * intent's target range lives in. DECLARED, never derived — CIDR containment
+   * cannot tell which mesh a range belongs to (separate overlays share one TUN
+   * supernet), so a mesh-space target says so itself, and a target without the
+   * field resolves through the policy mapping on every render target.
+   *
+   * The named entity may live in ANOTHER org's registry file: org files render
+   * individually (a per-org repo renders from its own file only), so integrity
+   * must not hard-fail the name being absent — `[routing-mesh]` checks the
+   * range only against a mesh entity it can actually see.
+   */
+  mesh: z.string().min(1).optional(),
 });
 
 export const RoutingCatchAllSchema = z.strictObject({
@@ -67,4 +80,43 @@ export function orderRouting<T extends Routing>(entries: readonly T[]): T[] {
   const intents = entries.filter((e) => e.entry === "intent");
   const catchAlls = entries.filter((e) => e.entry === "catch-all");
   return [...intents.sort(byPriorityThenName), ...catchAlls.sort(byPriorityThenName)];
+}
+
+/**
+ * A render target's routing vocabulary. Membership is EXPLICIT data on the
+ * target, never inferred from addresses (ZT ruling, 2026-08-14): a node with
+ * sing-box rules "can be a mesh node which can route directly to 10.* ip. it
+ * can also possible that it is not a mesh node so traffic go through the
+ * proxy node."
+ */
+export interface RouteVocabulary {
+  /**
+   * Mesh entity name → the name of this target's direct/mesh path into that
+   * overlay (a Surge policy group, a sing-box outbound tag — the target's own
+   * vocabulary). A key's presence IS membership; `{}` declares a target that
+   * is a member of nothing.
+   */
+  memberOf: Record<string, string>;
+  /** Policy entity name → proxy group / outbound tag, same vocabulary. */
+  policyMap: Record<string, string>;
+}
+
+/**
+ * Membership-aware policy resolution — the one definition every renderer
+ * shares. A target that is a MEMBER of the mesh an entry's range lives in
+ * routes it over its own mesh path, whatever the policy says: the policy
+ * names which detour reaches the range from OUTSIDE, and a member is inside.
+ * Everything else — non-members, targets outside any mesh (LAN sites),
+ * domain-shaped targets — resolves through the policy mapping.
+ *
+ * Returns `undefined` when the policy has no mapping; the caller refuses with
+ * its own context, because a silently dropped entry is the exact failure
+ * class this engine exists to kill.
+ */
+export function resolveRoute(entry: Routing, vocabulary: RouteVocabulary): string | undefined {
+  const viaMembership =
+    entry.entry === "intent" && entry.mesh !== undefined
+      ? vocabulary.memberOf[entry.mesh]
+      : undefined;
+  return viaMembership ?? vocabulary.policyMap[entry.policy];
 }

@@ -86,6 +86,13 @@ export function cidrContainsIp(cidr: string, ip: string): boolean {
   return ((ipToUint32(ip) & parsed.mask) >>> 0) === parsed.network;
 }
 
+/** Is every address of `inner` inside `outer`? */
+export function cidrContainsCidr(outer: string, inner: string): boolean {
+  const co = parseCidr(outer);
+  const ci = parseCidr(inner);
+  return co.prefix <= ci.prefix && ((ci.network & co.mask) >>> 0) === co.network;
+}
+
 /**
  * Do two CIDR ranges share any address? CIDR blocks are laminar — nested or
  * disjoint, partial overlap cannot exist — so this reduces to comparing both

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    { "kind": "policy", "name": "M_lab" },
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "lab-range",
+      "match": { "match": "cidr", "cidr": "10.99.5.0/24" },
+      "policy": "M_lab",
+      "priority": 10
+    },
+    {
+      "kind": "routeTarget",
+      "name": "gw-lab",
+      "resolver": "ghost-resolver",
+      "memberOf": {},
+      "policyOutbounds": { "ghost-policy": "detour" }
+    }
+  ]
+}

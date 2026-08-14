@@ -28,7 +28,8 @@ export async function runRenderSurge(options: RenderSurgeOptions): Promise<numbe
   console.error(
     `rendered surge dconf to ${options.outPath} ` +
       `(${stats.proxies} proxies, ${stats.pins} pins in ${stats.pinRegions} regions, ` +
-      `${stats.unmapped} unmapped, ${stats.catchAlls} catch-alls, ${stats.hosts} hosts)`,
+      `${stats.unmapped} unmapped, ${stats.intents} intents, ${stats.catchAlls} catch-alls, ` +
+      `${stats.hosts} hosts)`,
   );
   return 0;
 }

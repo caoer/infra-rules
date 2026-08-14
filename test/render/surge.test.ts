@@ -46,6 +46,7 @@ describe("surge renderer — tier-1 (D19)", () => {
       pins: 5,
       pinRegions: 2, // north has no pins — its block is skipped, its jumper stays
       unmapped: 3, // two regionless + one foreign-region host
+      intents: 5,
       catchAlls: 3,
       hosts: 8,
     });
@@ -59,10 +60,39 @@ describe("surge renderer — tier-1 (D19)", () => {
     expect(text).not.toContain("10.98.2.150");
   });
 
-  test("intent-typed routing entries do not render — only catch-alls ride the last pass", async () => {
+  test("routing intents render in priority order, between the pins and the catch-alls", async () => {
     const { registry, layout } = await loadInputs();
     const { text } = renderSurge(registry, layout);
-    expect(text).not.toContain("10.99.5.0/24"); // decoy-neighbor, entry:"intent"
+    const rules = text
+      .split("\n")
+      .filter((line) => /^(IP-CIDR|DOMAIN|DOMAIN-SUFFIX),/.test(line) && !line.includes("/32,"));
+    expect(rules).toEqual([
+      // intents, priority ascending — domains and ranges in one ordered pass
+      "DOMAIN-SUFFIX,svc.acme.test,PG_site_a",
+      "DOMAIN,portal.acme.test,PG_mesh",
+      "IP-CIDR,198.51.100.0/25,PG_site_a,no-resolve",
+      "IP-CIDR,10.99.5.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.98.32.0/24,PG_site_a,no-resolve", // mesh-space site, memberOf {} → policy detour
+      // catch-alls, always last
+      "IP-CIDR,10.98.1.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.20.14.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.98.0.0/17,PG_mesh,no-resolve",
+    ]);
+    // The intents block sits below the last /32 pin: pins are the most
+    // specific overrides and must stay strongest.
+    const lastPin = text.lastIndexOf("/32,");
+    expect(text.indexOf("DOMAIN-SUFFIX,svc.acme.test")).toBeGreaterThan(lastPin);
+  });
+
+  test("membership engages: a memberOf mesh routes its declared ranges over the member path", async () => {
+    const { registry, layout } = await loadInputs();
+    const member: SurgeLayout = { ...layout, memberOf: { "test-mesh": "PG_direct" } };
+    const { text } = renderSurge(registry, member);
+    // site-a-range declares mesh "test-mesh" → member path wins over the policy…
+    expect(text).toContain("IP-CIDR,10.98.32.0/24,PG_direct,no-resolve");
+    // …while targets outside any mesh keep the policy detour (LAN site, domains).
+    expect(text).toContain("IP-CIDR,198.51.100.0/25,PG_site_a,no-resolve");
+    expect(text).toContain("DOMAIN-SUFFIX,svc.acme.test,PG_site_a");
   });
 
   test("always-last engages: an intent outranking every catch-all still cannot land below them", async () => {
@@ -83,9 +113,10 @@ describe("surge renderer — tier-1 (D19)", () => {
     };
     const { text, stats } = renderSurge(outranking, layout);
     expect(stats.catchAlls).toBe(3);
-    expect(text).not.toContain("10.98.7.0/24"); // no priority value moves an intent into (or below) the last pass
-    // IP-CIDR lines exist only in [Rule], so the render's last three are the catch-alls.
+    // The intent renders — but no priority value moves it into (or below) the
+    // always-last pass. The render's last three IP-CIDR lines stay the catch-alls.
     const ruleLines = text.split("\n").filter((line) => line.startsWith("IP-CIDR,"));
+    expect(ruleLines.at(-4)).toBe("IP-CIDR,10.98.7.0/24,PG_mesh,no-resolve");
     expect(ruleLines.slice(-3)).toEqual([
       "IP-CIDR,10.98.1.0/24,PG_mesh,no-resolve",
       "IP-CIDR,10.20.14.0/24,PG_mesh,no-resolve",
@@ -175,6 +206,7 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      memberOf: {},
     };
     expect(SurgeLayoutSchema.safeParse(base).success).toBe(false); // jumper doubles as spare
     expect(
@@ -192,6 +224,7 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      memberOf: {},
       catchAlls: ["core-band"],
     };
     const parsed = SurgeLayoutSchema.safeParse(withRetiredKey);
@@ -207,6 +240,7 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      memberOf: {},
     };
     const parsed = SurgeLayoutSchema.safeParse(shared);
     expect(parsed.success).toBe(false);
@@ -225,6 +259,7 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      memberOf: {},
     };
     expect(SurgeLayoutSchema.safeParse(doubled).success).toBe(false);
   });
@@ -243,7 +278,7 @@ describe("surge renderer — CLI", () => {
         new Response(proc.stderr).text(),
       ]);
       expect(code).toBe(0);
-      expect(stderr).toContain("4 proxies, 5 pins in 2 regions");
+      expect(stderr).toContain("4 proxies, 5 pins in 2 regions, 3 unmapped, 5 intents");
       const { registry, layout } = await loadInputs();
       expect(await readFile(out, "utf8")).toBe(renderSurge(registry, layout).text);
     } finally {

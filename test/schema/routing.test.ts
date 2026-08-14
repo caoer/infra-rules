@@ -4,6 +4,7 @@ import {
   RoutingIntentSchema,
   RoutingSchema,
   orderRouting,
+  resolveRoute,
   type Routing,
 } from "../../src/schema/routing.ts";
 
@@ -132,5 +133,76 @@ describe("orderRouting — emission order semantics", () => {
     const a = orderRouting([intent("x", 30), catchAll("c", 0), intent("y", 20)]);
     const b = orderRouting([catchAll("c", 0), intent("y", 20), intent("x", 30)]);
     expect(a).toEqual(b);
+  });
+});
+
+describe("routing.mesh — declared mesh-space targets", () => {
+  test("an intent may declare the mesh its range lives in", () => {
+    const parsed = RoutingIntentSchema.parse({
+      kind: "routing",
+      entry: "intent",
+      name: "lab-site",
+      match: { match: "cidr", cidr: "10.99.2.0/24" },
+      mesh: "lab-mesh",
+      policy: "M_lab",
+      priority: 10,
+    });
+    expect(parsed.mesh).toBe("lab-mesh");
+  });
+
+  test("catch-alls refuse a mesh declaration — no renderer consumes it there", () => {
+    expect(
+      RoutingCatchAllSchema.safeParse({
+        kind: "routing",
+        entry: "catch-all",
+        name: "floor",
+        match: { match: "cidr", cidr: "10.96.0.0/12" },
+        mesh: "lab-mesh",
+        policy: "M_lab",
+        priority: 100,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("resolveRoute — membership-aware policy resolution", () => {
+  const meshIntent = RoutingIntentSchema.parse({
+    kind: "routing",
+    entry: "intent",
+    name: "lab-site",
+    match: { match: "cidr", cidr: "10.99.2.0/24" },
+    mesh: "lab-mesh",
+    policy: "site-a",
+    priority: 10,
+  });
+  const lanIntent = intent("lan-site", 20);
+
+  test("a member of the declared mesh resolves to its membership path, whatever the policy", () => {
+    expect(
+      resolveRoute(meshIntent, { memberOf: { "lab-mesh": "direct" }, policyMap: { "site-a": "detour" } }),
+    ).toBe("direct");
+  });
+
+  test("a non-member falls through to the policy mapping — the detour, per the ruling", () => {
+    expect(resolveRoute(meshIntent, { memberOf: {}, policyMap: { "site-a": "detour" } })).toBe(
+      "detour",
+    );
+  });
+
+  test("a target outside any mesh resolves through the policy mapping even for members", () => {
+    expect(
+      resolveRoute(lanIntent, { memberOf: { "lab-mesh": "direct" }, policyMap: { M_lab: "PG_lab" } }),
+    ).toBe("PG_lab");
+  });
+
+  test("an unmapped policy resolves to undefined — the caller must refuse, never drop", () => {
+    expect(resolveRoute(lanIntent, { memberOf: {}, policyMap: {} })).toBeUndefined();
+  });
+
+  test("catch-alls never take the membership path", () => {
+    const floor = catchAll("floor", 100);
+    expect(
+      resolveRoute(floor, { memberOf: { "lab-mesh": "direct" }, policyMap: { DIRECT: "PG_d" } }),
+    ).toBe("PG_d");
   });
 });

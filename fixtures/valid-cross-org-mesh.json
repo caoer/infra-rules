@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {},
+  "hand": [
+    { "kind": "policy", "name": "M_lab" },
+    { "kind": "view", "name": "lab-view", "scope": { "kind": "mesh", "mesh": "away-mesh" } },
+    { "kind": "resolver", "name": "gw-lab", "views": ["lab-view"] },
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "away-site",
+      "match": { "match": "cidr", "cidr": "10.99.2.0/24" },
+      "mesh": "away-mesh",
+      "policy": "M_lab",
+      "priority": 10
+    },
+    {
+      "kind": "routeTarget",
+      "name": "gw-lab",
+      "resolver": "gw-lab",
+      "memberOf": { "away-mesh": "direct" },
+      "policyOutbounds": { "M_lab": "detour" }
+    }
+  ]
+}
