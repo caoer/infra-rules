@@ -13,6 +13,7 @@
 
 import { runDiff } from "./commands/diff.ts";
 import { runRender } from "./commands/render.ts";
+import { runRenderSurge } from "./commands/render-surge.ts";
 import { runValidate } from "./commands/validate.ts";
 
 const USAGE = `usage: infra-rules <command> [options]
@@ -28,6 +29,10 @@ commands:
                                          REQUIRED when --out is a per-org repo
   diff   --registry <file> --out <dir> [--views a,b]
                                          compare artifacts (0 same, 1 differ, 2 failed)
+  render-surge --registry <file> --layout <file> --out <file>
+                                         write the Surge dconf to one explicit file
+                                         (exit 0 ok, 2 failed); never part of \`render\` —
+                                         the artifact carries proxy credentials
 `;
 
 type Handler = (flags: Map<string, string>) => Promise<number>;
@@ -62,6 +67,12 @@ const COMMANDS: Record<string, Handler> = {
       registryPath: required(flags, "registry"),
       outDir: required(flags, "out"),
       views: viewList(flags),
+    }),
+  "render-surge": (flags) =>
+    runRenderSurge({
+      registryPath: required(flags, "registry"),
+      layoutPath: required(flags, "layout"),
+      outPath: required(flags, "out"),
     }),
 };
 
