@@ -16,7 +16,14 @@ const entities = [
     policy: "M_lab",
     priority: 100,
   },
-  { kind: "routing", entry: "catch-all", name: "final", policy: "DIRECT", priority: 0 },
+  {
+    kind: "routing",
+    entry: "catch-all",
+    name: "final",
+    match: { match: "cidr", cidr: "10.96.0.0/12" },
+    policy: "DIRECT",
+    priority: 0,
+  },
   {
     kind: "proxyExit",
     name: "exit-fixture",

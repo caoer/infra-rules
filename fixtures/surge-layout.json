@@ -5,6 +5,5 @@
   "proxyExtras": "tfo=true, udp-relay=true",
   "hostSuffix": ".mesh.test",
   "policyGroups": { "mesh": "PG_mesh" },
-  "pinPolicy": "mesh",
-  "catchAlls": ["core-band", "portal", "supernet-catchall"]
+  "pinPolicy": "mesh"
 }

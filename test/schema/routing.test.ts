@@ -22,6 +22,7 @@ const catchAll = (name: string, priority: number): Routing =>
     kind: "routing",
     entry: "catch-all",
     name,
+    match: { match: "cidr", cidr: "10.96.0.0/12" },
     policy: "DIRECT",
     priority,
   });
@@ -51,7 +52,7 @@ describe("RoutingSchema", () => {
     ).toBe(true);
   });
 
-  test("happy path: catch-all carries no match", () => {
+  test("happy path: catch-all carries a cidr match (a covering range is still a rule)", () => {
     expect(catchAll("final", 0).entry).toBe("catch-all");
   });
 
@@ -67,15 +68,27 @@ describe("RoutingSchema", () => {
     ).toBe(false);
   });
 
-  test("a catch-all with a match is rejected — catch-alls match everything", () => {
+  test("a catch-all without a match is rejected — a covering range must name its range", () => {
     expect(
       RoutingSchema.safeParse({
         kind: "routing",
         entry: "catch-all",
-        name: "sneaky",
+        name: "rangeless",
         policy: "DIRECT",
         priority: 0,
-        match: { match: "cidr", cidr: "10.99.0.0/16" },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("a catch-all with a domain-shaped match is rejected — no renderer can emit one", () => {
+    expect(
+      RoutingSchema.safeParse({
+        kind: "routing",
+        entry: "catch-all",
+        name: "domainy",
+        policy: "DIRECT",
+        priority: 0,
+        match: { match: "domain-suffix", suffix: ".lab.example" },
       }).success,
     ).toBe(false);
   });

@@ -7,12 +7,18 @@ import { z } from "zod";
  *
  * - `intent` entries carry a required integer `priority`; lower emits
  *   earlier (the `ip rule` convention).
- * - `catch-all` entries are a separate variant with no match: renderers emit
+ * - `catch-all` entries are the broad covering ranges (D14): renderers emit
  *   them in an always-last pass, after every intent, whatever their
- *   priorities. Priority orders catch-alls only among themselves.
+ *   priorities. Priority orders catch-alls only among themselves — and it is
+ *   still load-bearing there, because catch-alls can nest (a /24 inside the
+ *   /12 supernet must emit first). The match is cidr-only: a catch-all is a
+ *   covering range by definition, and no renderer has a meaning for a
+ *   domain-shaped one — the schema refuses what no renderer could emit.
  *
  * `orderRouting` is the canonical emission order; renderers import it rather
- * than re-deriving the sort.
+ * than re-deriving the sort. The type split IS the ordering guarantee: no
+ * priority value can move an intent below a catch-all, so ordering never
+ * rests on a human keeping one number the highest of a hand-edited list.
  */
 export const RouteMatchSchema = z.discriminatedUnion("match", [
   z.strictObject({ match: z.literal("cidr"), cidr: z.cidrv4() }),
@@ -36,6 +42,7 @@ export const RoutingCatchAllSchema = z.strictObject({
   kind: z.literal("routing"),
   entry: z.literal("catch-all"),
   name: z.string().min(1),
+  match: z.strictObject({ match: z.literal("cidr"), cidr: z.cidrv4() }),
   policy: z.string().min(1),
   priority: z.number().int().nonnegative(),
 });
@@ -56,7 +63,7 @@ function byPriorityThenName(a: Routing, b: Routing): number {
 }
 
 /** Canonical emission order: every intent (by priority), then every catch-all (by priority). */
-export function orderRouting(entries: readonly Routing[]): Routing[] {
+export function orderRouting<T extends Routing>(entries: readonly T[]): T[] {
   const intents = entries.filter((e) => e.entry === "intent");
   const catchAlls = entries.filter((e) => e.entry === "catch-all");
   return [...intents.sort(byPriorityThenName), ...catchAlls.sort(byPriorityThenName)];

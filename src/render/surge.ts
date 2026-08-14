@@ -35,7 +35,7 @@ import { z } from "zod";
 import type { Registry, Entity } from "../schema/registry.ts";
 import { HOST_SOURCE, type Host } from "../schema/host.ts";
 import type { ProxyExit } from "../schema/proxy-exit.ts";
-import type { Routing, RoutingIntent } from "../schema/routing.ts";
+import type { RoutingCatchAll } from "../schema/routing.ts";
 import { orderRouting } from "../schema/routing.ts";
 import { ipToUint32 } from "../lib/cidr.ts";
 
@@ -61,8 +61,6 @@ export const SurgeLayoutSchema = z
     policyGroups: z.record(z.string().min(1), z.string().min(1)),
     /** Registry policy the `/32` pins route to. */
     pinPolicy: z.string().min(1),
-    /** Names of the routing entries emitted as the always-last catch-alls. */
-    catchAlls: z.array(z.string().min(1)).min(1),
   })
   .superRefine((layout, ctx) => {
     const regions = new Set(layout.regionOrder);
@@ -87,15 +85,42 @@ export const SurgeLayoutSchema = z
         });
       }
     }
-    const jumperNames = new Set(Object.values(layout.jumpers));
+    // Duplicate exit names would emit duplicate [Proxy] lines, and Surge
+    // partially applies an invalid profile rather than refusing it — so
+    // duplicates are a hard error naming both sources (D4), never a silent
+    // dedup that hides which hand edit was wrong.
+    const jumperRegionOf = new Map<string, string>();
+    for (const region of layout.regionOrder) {
+      const jumper = layout.jumpers[region];
+      if (jumper === undefined) continue; // uncovered region already reported above
+      const first = jumperRegionOf.get(jumper);
+      if (first !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["jumpers", region],
+          message: `regions "${first}" and "${region}" both name jumper "${jumper}" — duplicate [Proxy] line`,
+        });
+      } else {
+        jumperRegionOf.set(jumper, region);
+      }
+    }
+    const seenSpares = new Set<string>();
     for (const spare of layout.spares) {
-      if (jumperNames.has(spare)) {
+      if (jumperRegionOf.has(spare)) {
         ctx.addIssue({
           code: "custom",
           path: ["spares"],
           message: `"${spare}" is both a jumper and a spare`,
         });
       }
+      if (seenSpares.has(spare)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["spares"],
+          message: `spare "${spare}" is listed twice — duplicate [Proxy] line`,
+        });
+      }
+      seenSpares.add(spare);
     }
   });
 
@@ -202,22 +227,21 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
     .filter((member) => member.region === undefined || !regionRank.has(member.region))
     .sort(byIp);
 
-  // ── catch-alls: layout-named routing entries, priority-ordered, always last
-  const routing = new Map<string, Routing>(
-    entities.filter((entity) => entity.kind === "routing").map((entry) => [entry.name, entry]),
-  );
+  // ── catch-alls: every `entry:"catch-all"` routing entity, priority-ordered
+  // among themselves, emitted in the always-last pass (D14). Membership is
+  // the entry type in the registry — data, not a layout name list — so no
+  // hand-kept priority or allowlist decides what lands below what.
   const catchAlls = orderRouting(
-    layout.catchAlls.map((name) => {
-      const entry = routing.get(name);
-      if (entry === undefined) fail(`layout names catch-all "${name}" but the registry has none`);
-      return entry;
-    }),
-  ).map((entry) => {
-    if (entry.entry !== "intent" || entry.match.match !== "cidr") {
-      fail(`catch-all "${entry.name}" is not a cidr routing intent — cannot render as IP-CIDR`);
-    }
-    return entry as RoutingIntent & { match: { match: "cidr"; cidr: string } };
-  });
+    entities.filter(
+      (entity): entity is RoutingCatchAll => entity.kind === "routing" && entity.entry === "catch-all",
+    ),
+  );
+  if (catchAlls.length === 0) {
+    fail(
+      `registry has no catch-all routing entries — a profile without its covering ranges ` +
+        `silently stops routing the mesh space; an empty catch-all set is never correct`,
+    );
+  }
 
   // ── emit — layout mirrors the predecessor generator line-for-line, so the
   // comment-stripped byte-diff (D19) compares structurally identical bodies.

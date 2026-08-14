@@ -58,7 +58,7 @@
       "policy": "direct",
       "priority": 200
     },
-    { "kind": "routing", "entry": "catch-all", "name": "default", "policy": "direct", "priority": 900 },
+    { "kind": "routing", "entry": "catch-all", "name": "default", "match": { "match": "cidr", "cidr": "10.99.0.0/16" }, "policy": "direct", "priority": 900 },
     {
       "kind": "service",
       "name": "grafana",

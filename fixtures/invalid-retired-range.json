@@ -12,6 +12,14 @@
       "match": { "match": "cidr", "cidr": "10.98.192.0/20" },
       "policy": "direct",
       "priority": 50
+    },
+    {
+      "kind": "routing",
+      "entry": "catch-all",
+      "name": "dead-floor",
+      "match": { "match": "cidr", "cidr": "10.98.144.0/22" },
+      "policy": "direct",
+      "priority": 200
     }
   ]
 }

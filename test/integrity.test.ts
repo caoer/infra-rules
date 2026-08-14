@@ -98,7 +98,7 @@ describe("integrity — each check catches its violation class", () => {
 
   test("[retired-range] retired space hard-fails as cidr, as address, and as routing match", () => {
     const { messages } = violationsOf("invalid-retired-range.json");
-    expect(messages).toHaveLength(3);
+    expect(messages).toHaveLength(4);
     for (const message of messages) expect(message).toStartWith("[retired-range]");
     expect(messages.some((m) => m.includes("cidr 10.98.144.0/24") && m.includes('network "old-lan"'))).toBe(true);
     expect(
@@ -106,6 +106,10 @@ describe("integrity — each check catches its violation class", () => {
     ).toBe(true);
     expect(
       messages.some((m) => m.includes("match.cidr 10.98.192.0/20") && m.includes('routing "dead-route"')),
+    ).toBe(true);
+    // The entry type must not exempt a cidr from the walk: catch-alls fail too.
+    expect(
+      messages.some((m) => m.includes("match.cidr 10.98.144.0/22") && m.includes('routing "dead-floor"')),
     ).toBe(true);
   });
 
@@ -166,8 +170,8 @@ describe("validate command — exit codes (D18)", () => {
   test("integrity violations → 1, one line per violation + summary", () => {
     const { code, out } = run([fixture("invalid-retired-range.json")]);
     expect(code).toBe(1);
-    expect(out.filter((l) => l.startsWith("✗")).length).toBe(3);
-    expect(out.at(-1)).toContain("3 violations");
+    expect(out.filter((l) => l.startsWith("✗")).length).toBe(4);
+    expect(out.at(-1)).toContain("4 violations");
   });
 
   test("schema-shape violation (wrong schemaVersion) → 1", () => {

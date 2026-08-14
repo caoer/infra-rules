@@ -59,10 +59,60 @@ describe("surge renderer — tier-1 (D19)", () => {
     expect(text).not.toContain("10.98.2.150");
   });
 
-  test("routing entries not named by the layout do not render", async () => {
+  test("intent-typed routing entries do not render — only catch-alls ride the last pass", async () => {
     const { registry, layout } = await loadInputs();
     const { text } = renderSurge(registry, layout);
-    expect(text).not.toContain("10.99.5.0/24"); // decoy-neighbor
+    expect(text).not.toContain("10.99.5.0/24"); // decoy-neighbor, entry:"intent"
+  });
+
+  test("always-last engages: an intent outranking every catch-all still cannot land below them", async () => {
+    const { registry, layout } = await loadInputs();
+    const outranking: Registry = {
+      ...registry,
+      hand: [
+        ...registry.hand,
+        {
+          kind: "routing" as const,
+          entry: "intent" as const,
+          name: "outranker",
+          priority: 999, // higher than every catch-all in the fixture (100/110/120)
+          match: { match: "cidr" as const, cidr: "10.98.7.0/24" },
+          policy: "mesh",
+        },
+      ],
+    };
+    const { text, stats } = renderSurge(outranking, layout);
+    expect(stats.catchAlls).toBe(3);
+    expect(text).not.toContain("10.98.7.0/24"); // no priority value moves an intent into (or below) the last pass
+    // IP-CIDR lines exist only in [Rule], so the render's last three are the catch-alls.
+    const ruleLines = text.split("\n").filter((line) => line.startsWith("IP-CIDR,"));
+    expect(ruleLines.slice(-3)).toEqual([
+      "IP-CIDR,10.98.1.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.20.14.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.98.0.0/17,PG_mesh,no-resolve",
+    ]);
+  });
+
+  test("catch-all cannot be shadowed: priority orders catch-alls only among themselves", async () => {
+    const { registry, layout } = await loadInputs();
+    // Drop core-band (10.98.1.0/24) to priority 0 — far below every intent.
+    // It must still emit in the always-last block, and still ahead of the
+    // /15 supernet that contains it (priority among catch-alls is nesting order).
+    const reprioritized: Registry = {
+      ...registry,
+      hand: registry.hand.map((entity) =>
+        entity.kind === "routing" && entity.name === "core-band"
+          ? { ...entity, priority: 0 }
+          : entity,
+      ),
+    };
+    const { text } = renderSurge(reprioritized, layout);
+    const ruleLines = text.split("\n").filter((line) => line.startsWith("IP-CIDR,"));
+    expect(ruleLines.slice(-3)).toEqual([
+      "IP-CIDR,10.98.1.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.20.14.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.98.0.0/17,PG_mesh,no-resolve",
+    ]);
   });
 
   test("credentials appear in the full render but never survive the strip", async () => {
@@ -99,10 +149,15 @@ describe("surge renderer — loud failures", () => {
     expect(() => renderSurge(registry, bad)).toThrow(/not assigned by the layout: exit-west-2/);
   });
 
-  test("layout naming a missing catch-all throws", async () => {
+  test("a registry with no catch-all entries throws instead of rendering without a floor", async () => {
     const { registry, layout } = await loadInputs();
-    const bad = { ...layout, catchAlls: ["core-band", "no-such-entry"] };
-    expect(() => renderSurge(registry, bad)).toThrow(/catch-all "no-such-entry"/);
+    const noCatchAlls: Registry = {
+      ...registry,
+      hand: registry.hand.filter(
+        (entity) => !(entity.kind === "routing" && entity.entry === "catch-all"),
+      ),
+    };
+    expect(() => renderSurge(noCatchAlls, layout)).toThrow(/no catch-all routing entries/);
   });
 
   test("a policy without a policyGroups mapping throws", async () => {
@@ -120,13 +175,58 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
-      catchAlls: ["core-band"],
     };
     expect(SurgeLayoutSchema.safeParse(base).success).toBe(false); // jumper doubles as spare
     expect(
       SurgeLayoutSchema.safeParse({ ...base, spares: [], regionOrder: ["east", "west"] }).success,
     ).toBe(false); // west has no jumper
     expect(SurgeLayoutSchema.safeParse({ ...base, spares: [] }).success).toBe(true);
+  });
+
+  test("layout schema rejects the retired catchAlls key — membership is registry data now", () => {
+    const withRetiredKey = {
+      regionOrder: ["east"],
+      jumpers: { east: "exit-east-1" },
+      spares: [],
+      proxyExtras: "tfo=true",
+      hostSuffix: ".x.test",
+      policyGroups: { mesh: "PG_mesh" },
+      pinPolicy: "mesh",
+      catchAlls: ["core-band"],
+    };
+    const parsed = SurgeLayoutSchema.safeParse(withRetiredKey);
+    expect(parsed.success).toBe(false); // strictObject refuses the leftover key, loud
+  });
+
+  test("two regions naming one jumper is a layout validate error, not a silent dedup (D4)", () => {
+    const shared = {
+      regionOrder: ["east", "west"],
+      jumpers: { east: "exit-east-1", west: "exit-east-1" },
+      spares: [],
+      proxyExtras: "tfo=true",
+      hostSuffix: ".x.test",
+      policyGroups: { mesh: "PG_mesh" },
+      pinPolicy: "mesh",
+    };
+    const parsed = SurgeLayoutSchema.safeParse(shared);
+    expect(parsed.success).toBe(false);
+    const message = parsed.success ? "" : parsed.error.issues.map((issue) => issue.message).join("\n");
+    expect(message).toContain('"east"'); // both sources named, per D4
+    expect(message).toContain('"west"');
+    expect(message).toContain('"exit-east-1"');
+  });
+
+  test("a spare listed twice is a layout validate error", () => {
+    const doubled = {
+      regionOrder: ["east"],
+      jumpers: { east: "exit-east-1" },
+      spares: ["exit-west-2", "exit-west-2"],
+      proxyExtras: "tfo=true",
+      hostSuffix: ".x.test",
+      policyGroups: { mesh: "PG_mesh" },
+      pinPolicy: "mesh",
+    };
+    expect(SurgeLayoutSchema.safeParse(doubled).success).toBe(false);
   });
 });
 

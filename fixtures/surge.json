@@ -27,8 +27,8 @@
     { "kind": "proxyExit", "name": "exit-north-1", "host": "192.0.2.12", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-north" },
     { "kind": "proxyExit", "name": "exit-west-2", "host": "192.0.2.13", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-spare" },
     { "kind": "routing", "entry": "intent", "name": "decoy-neighbor", "priority": 50, "match": { "match": "cidr", "cidr": "10.99.5.0/24" }, "policy": "mesh" },
-    { "kind": "routing", "entry": "intent", "name": "core-band", "priority": 100, "match": { "match": "cidr", "cidr": "10.98.1.0/24" }, "policy": "mesh" },
-    { "kind": "routing", "entry": "intent", "name": "portal", "priority": 110, "match": { "match": "cidr", "cidr": "10.20.14.0/24" }, "policy": "mesh" },
-    { "kind": "routing", "entry": "intent", "name": "supernet-catchall", "priority": 120, "match": { "match": "cidr", "cidr": "10.98.0.0/17" }, "policy": "mesh" }
+    { "kind": "routing", "entry": "catch-all", "name": "core-band", "priority": 100, "match": { "match": "cidr", "cidr": "10.98.1.0/24" }, "policy": "mesh" },
+    { "kind": "routing", "entry": "catch-all", "name": "portal", "priority": 110, "match": { "match": "cidr", "cidr": "10.20.14.0/24" }, "policy": "mesh" },
+    { "kind": "routing", "entry": "catch-all", "name": "supernet-catchall", "priority": 120, "match": { "match": "cidr", "cidr": "10.98.0.0/17" }, "policy": "mesh" }
   ]
 }

@@ -276,7 +276,10 @@ function eachCidrField(
     ) {
       visit(located, [...located.path, "allocation", "subnet"], entity.allocation.subnet, "allocation.subnet");
     }
-    if (entity.kind === "routing" && entity.entry === "intent" && entity.match.match === "cidr") {
+    // Both routing variants: intent matches may be cidr-shaped; catch-all
+    // matches always are. A catch-all naming retired space must fail like
+    // any other cidr field — the entry type must not exempt it from the walk.
+    if (entity.kind === "routing" && entity.match.match === "cidr") {
       visit(located, [...located.path, "match", "cidr"], entity.match.cidr, "match.cidr");
     }
   }
