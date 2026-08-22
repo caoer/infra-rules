@@ -9,9 +9,11 @@
  * Exit codes (D18):
  *   render  0 rendered            2 failed
  *   diff    0 no difference       1 difference found       2 failed
+ *   publish 0 applied / dry run   2 failed
  */
 
 import { runDiff } from "./commands/diff.ts";
+import { runPublishCloudflare } from "./commands/publish-cloudflare.ts";
 import { runRender } from "./commands/render.ts";
 import { runRenderSurge } from "./commands/render-surge.ts";
 import { runValidate } from "./commands/validate.ts";
@@ -33,14 +35,35 @@ commands:
                                          write the Surge dconf to one explicit file
                                          (exit 0 ok, 2 failed); never part of \`render\` —
                                          the artifact carries proxy credentials
+  publish cloudflare --zone <zone> --records <file> [--records <file>...] [--dry-run]
+                                         upsert rendered records/<view>.json files into a
+                                         Cloudflare zone (exit 0 ok, 2 failed); token from
+                                         $CF_API_TOKEN; writes DNS-only records tagged
+                                         infra-rules:<view> and deletes only those
 `;
 
-type Handler = (flags: Map<string, string>) => Promise<number>;
+/** Flag name → every value given, in order. Boolean flags hold `[""]`. */
+type Flags = Map<string, string[]>;
+type Handler = (flags: Flags) => Promise<number>;
 
-function required(flags: Map<string, string>, name: string): string {
-  const value = flags.get(name);
-  if (value === undefined) throw new Error(`missing required flag --${name}`);
-  return value;
+/** Flags that take no value. Everything else takes exactly one. */
+const BOOLEAN_FLAGS = new Set(["dry-run"]);
+
+function required(flags: Flags, name: string): string {
+  const values = flags.get(name);
+  if (values === undefined) throw new Error(`missing required flag --${name}`);
+  if (values.length > 1) throw new Error(`flag --${name} given ${values.length} times; it takes one value`);
+  return values[0]!;
+}
+
+function optional(flags: Flags, name: string): string | undefined {
+  return flags.has(name) ? required(flags, name) : undefined;
+}
+
+function requiredList(flags: Flags, name: string): string[] {
+  const values = flags.get(name);
+  if (values === undefined) throw new Error(`missing required flag --${name} (repeatable)`);
+  return values;
 }
 
 /**
@@ -59,7 +82,7 @@ const COMMANDS: Record<string, Handler> = {
     runRender({
       registryPath: required(flags, "registry"),
       outDir: required(flags, "out"),
-      producedListPath: flags.get("produced"),
+      producedListPath: optional(flags, "produced"),
       views: viewList(flags),
     }),
   diff: (flags) =>
@@ -74,31 +97,43 @@ const COMMANDS: Record<string, Handler> = {
       layoutPath: required(flags, "layout"),
       outPath: required(flags, "out"),
     }),
+  "publish cloudflare": (flags) =>
+    runPublishCloudflare({
+      zone: required(flags, "zone"),
+      recordsPaths: requiredList(flags, "records"),
+      dryRun: flags.has("dry-run"),
+    }),
 };
 
 /** `--views a,b` → ["a","b"]; absent → undefined (render every view). */
-function viewList(flags: Map<string, string>): string[] | undefined {
-  const raw = flags.get("views");
+function viewList(flags: Flags): string[] | undefined {
+  const raw = optional(flags, "views");
   if (raw === undefined) return undefined;
   const views = raw.split(",").map((v) => v.trim()).filter((v) => v !== "");
   if (views.length === 0) throw new Error("--views needs at least one view name");
   return views;
 }
 
-/** `--key value` and `--key=value`; unknown flags are an error, not a silent no-op. */
-function parseFlags(argv: string[]): Map<string, string> {
-  const flags = new Map<string, string>();
+/** `--key value` and `--key=value`, repeatable; unknown flags are an error, not a silent no-op. */
+function parseFlags(argv: string[]): Flags {
+  const flags: Flags = new Map();
+  const add = (key: string, value: string) => flags.set(key, [...(flags.get(key) ?? []), value]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
     if (!arg.startsWith("--")) throw new Error(`unexpected argument: ${arg}`);
     const eq = arg.indexOf("=");
     if (eq !== -1) {
-      flags.set(arg.slice(2, eq), arg.slice(eq + 1));
+      add(arg.slice(2, eq), arg.slice(eq + 1));
+      continue;
+    }
+    const key = arg.slice(2);
+    if (BOOLEAN_FLAGS.has(key)) {
+      add(key, "");
       continue;
     }
     const value = argv[++i];
     if (value === undefined) throw new Error(`flag ${arg} needs a value`);
-    flags.set(arg.slice(2), value);
+    add(key, value);
   }
   return flags;
 }
@@ -117,9 +152,11 @@ export async function main(argv: string[]): Promise<number> {
       return 2;
     }
   }
-  const handler = COMMANDS[command];
+  // Two-word commands (`publish cloudflare`) consume their first positional.
+  const name = command === "publish" && rest[0] !== undefined ? `${command} ${rest.shift()}` : command;
+  const handler = COMMANDS[name];
   if (handler === undefined) {
-    console.error(`unknown command: ${command}\n\n${USAGE}`);
+    console.error(`unknown command: ${name}\n\n${USAGE}`);
     return 2;
   }
   try {

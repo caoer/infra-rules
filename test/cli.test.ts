@@ -200,16 +200,36 @@ describe("cli wiring", () => {
 
   test("every command in the usage text is actually routed", async () => {
     const usage = (await run("--help")).stdout;
-    for (const command of ["validate", "render", "diff"]) {
+    for (const command of ["validate", "render", "diff", "render-surge", "publish cloudflare"]) {
       expect(usage).toContain(command);
       // An unrouted command exits 2 with "unknown command"; a routed one
       // reaches its handler and fails on missing arguments instead.
-      const { stdout: _s, code } = await run(command);
+      const words = command.split(" ");
+      const { stdout: _s, code } = await run(...words);
       expect(code).toBe(2);
-      const proc = Bun.spawn(["bun", CLI, command], { stdout: "pipe", stderr: "pipe" });
+      const proc = Bun.spawn(["bun", CLI, ...words], { stdout: "pipe", stderr: "pipe" });
       await proc.exited;
       expect(await new Response(proc.stderr).text()).not.toContain("unknown command");
     }
+  });
+
+  test("publish cloudflare is routed as a two-word command and reads its token from the environment, never a flag", async () => {
+    const stderrOf = async (env: Record<string, string | undefined>, ...args: string[]) => {
+      const proc = Bun.spawn(["bun", CLI, ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
+      return { code: await proc.exited, stderr: await new Response(proc.stderr).text() };
+    };
+    const unset = await stderrOf({ CF_API_TOKEN: undefined }, "publish", "cloudflare", "--zone", "acme.test", "--records", "a.json", "--records", "b.json", "--dry-run");
+    expect(unset.code).toBe(2);
+    expect(unset.stderr).toContain("CF_API_TOKEN is not set");
+    expect(unset.stderr).not.toContain("unknown command");
+
+    // With a token the command proceeds to its inputs: the repeated --records
+    // flag is accepted and the first missing file is what fails.
+    const missing = await stderrOf({ CF_API_TOKEN: "fake-token" }, "publish", "cloudflare", "--zone", "acme.test", "--records", join(dir, "a.json"), "--records", join(dir, "b.json"));
+    expect(missing.code).toBe(2);
+    expect(missing.stderr).toContain("ENOENT");
+
+    expect((await stderrOf({}, "publish", "elsewhere")).stderr).toContain("unknown command: publish elsewhere");
   });
 
   test("package.json exposes the CLI as a bin, or `bun add` gives consumers nothing", async () => {
