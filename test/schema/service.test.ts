@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ServiceSchema } from "../../src/schema/service.ts";
+import { ServiceSchema, isHostService } from "../../src/schema/service.ts";
 
 describe("ServiceSchema", () => {
   test("happy path", () => {
@@ -40,5 +40,40 @@ describe("ServiceSchema", () => {
         host: "alpha",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("ServiceSchema — static answers (public entry points)", () => {
+  const base = { kind: "service", name: "entry", dnsName: "entry.lab.example" };
+
+  test("an A answer and a CNAME answer parse without a host", () => {
+    expect(ServiceSchema.safeParse({ ...base, answer: { type: "A", value: "203.0.113.7" } }).success).toBe(true);
+    expect(
+      ServiceSchema.safeParse({ ...base, answer: { type: "CNAME", value: "gw.upstream.example" } }).success,
+    ).toBe(true);
+  });
+
+  test("the value is typed by the record type", () => {
+    expect(ServiceSchema.safeParse({ ...base, answer: { type: "A", value: "gw.upstream.example" } }).success).toBe(false);
+    expect(ServiceSchema.safeParse({ ...base, answer: { type: "CNAME", value: "not a host" } }).success).toBe(false);
+    expect(ServiceSchema.safeParse({ ...base, answer: { type: "TXT", value: "x" } }).success).toBe(false);
+  });
+
+  test("exactly one of host / answer — neither and both are refused", () => {
+    expect(ServiceSchema.safeParse(base).success).toBe(false);
+    expect(
+      ServiceSchema.safeParse({ ...base, host: "alpha", answer: { type: "A", value: "203.0.113.7" } }).success,
+    ).toBe(false);
+  });
+
+  test("port/http belong to a host; a static answer refuses them", () => {
+    expect(
+      ServiceSchema.safeParse({ ...base, answer: { type: "A", value: "203.0.113.7" }, port: 443 }).success,
+    ).toBe(false);
+  });
+
+  test("isHostService narrows the two forms", () => {
+    expect(isHostService(ServiceSchema.parse({ ...base, host: "alpha" }))).toBe(true);
+    expect(isHostService(ServiceSchema.parse({ ...base, answer: { type: "A", value: "203.0.113.7" } }))).toBe(false);
   });
 });

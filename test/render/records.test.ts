@@ -174,3 +174,28 @@ describe("records renderer — the file reads as a zone", () => {
     expect(golden).not.toMatch(/\/\/|\/\*/);
   });
 });
+
+const publicRegistry = await loadFixture("valid-public-answers.json");
+
+describe("records renderer — static answers in a public view", () => {
+  const files = render(publicRegistry);
+
+  test("the public file states its vantage and carries A and CNAME records without a host", () => {
+    const file = JSON.parse(fileFor("public", files));
+    expect(file.scope).toEqual({ kind: "public" });
+    expect(file.records).toEqual([
+      { name: "entry.hq.acme.test", type: "CNAME", value: "office-gw.upstream.test" },
+      { name: "entry.site1.acme.test", type: "A", value: "203.0.113.75" },
+    ]);
+  });
+
+  test("a public view never answers a host-backed name, and mesh/LAN views never answer a static one", () => {
+    const names = (view: string) => JSON.parse(fileFor(view, files)).records.map((r: { name: string }) => r.name);
+    expect(names("public")).not.toContain("grafana.acme.test");
+    expect(names("vpn")).not.toContain("entry.hq.acme.test");
+    expect(names("office")).not.toContain("entry.site1.acme.test");
+    // Existing views render exactly as before the public view existed.
+    expect(fileFor("vpn", files)).toBe(fileFor("vpn"));
+    expect(fileFor("office", files)).toBe(fileFor("office"));
+  });
+});

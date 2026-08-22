@@ -268,3 +268,56 @@ describe("singbox registration (fresh process — immune to in-process registry 
     expect(written).toBe(golden);
   });
 });
+
+describe("singbox — static answers render as IN A / IN CNAME in their public view only", () => {
+  const withPublic: Registry = {
+    ...registry,
+    hand: [
+      ...registry.hand,
+      { kind: "view", name: "internet", scope: { kind: "public" } },
+      {
+        kind: "service",
+        name: "entry-cname",
+        dnsName: "entry.orgnet.test",
+        answer: { type: "CNAME", value: "gw.upstream.test" },
+      },
+      {
+        kind: "service",
+        name: "entry-a",
+        dnsName: "entry-a.orgnet.test",
+        answer: { type: "A", value: "203.0.113.75" },
+      },
+    ],
+  };
+  const files = buildFileSet(withPublic, "/out", [singboxRenderer]);
+  const rulesOf = (name: string) => JSON.parse(files.get(`/out/singbox/${name}.json`)!).dnsRules;
+
+  test("the public view carries both static answers; the CNAME target is absolute", () => {
+    expect(rulesOf("dnsrules-internet")).toEqual([
+      { domain: ["entry-a.orgnet.test"], action: "predefined", answer: ["entry-a.orgnet.test. IN A 203.0.113.75"] },
+      { domain: ["entry.orgnet.test"], action: "predefined", answer: ["entry.orgnet.test. IN CNAME gw.upstream.test."] },
+    ]);
+  });
+
+  test("no static answer leaks into a mesh or LAN view, and no host answer into the public view", () => {
+    for (const view of ["dnsrules-ownermesh", "dnsrules-orgnet-site1", "dnsrules-orgnet-hq"]) {
+      expect(JSON.stringify(rulesOf(view))).not.toContain("entry");
+    }
+    expect(JSON.stringify(rulesOf("dnsrules-internet"))).not.toContain("panel");
+  });
+
+  test("a resolver listing the public view merges static answers behind its LAN/mesh answers", () => {
+    const merged: Registry = {
+      ...withPublic,
+      hand: [
+        ...withPublic.hand,
+        { kind: "resolver", name: "gw-all", views: ["orgnet-site1", "ownermesh", "internet"] },
+      ],
+    };
+    const out = buildFileSet(merged, "/out", [singboxRenderer]);
+    const rules = JSON.parse(out.get("/out/singbox/dnsrules-merged-gw-all.json")!).dnsRules;
+    const answers = rules.map((r: { answer: string[] }) => r.answer[0]);
+    expect(answers).toContain("entry.orgnet.test. IN CNAME gw.upstream.test.");
+    expect(answers).toContain("entry-a.orgnet.test. IN A 203.0.113.75");
+  });
+});

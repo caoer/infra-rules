@@ -15,13 +15,17 @@
  * would make the probe assert a lie and go red forever. This is the whole
  * reason `view` is first-class (Unit 1), and `test/render/probes.test.ts`
  * fails if any other view's address ever appears in a section.
+ *
+ * STATIC-ANSWER SERVICES CONTRIBUTE NOTHING. The manifest probes hosts; a
+ * static name has no host behind it, and a CNAME has no address at all. A
+ * `public` view therefore always renders an empty section.
  */
 
 import { registerRenderer, type RenderedFile } from "./index.ts";
 import type { JsonObject } from "../lib/canonical.ts";
 import type { Registry } from "../schema/registry.ts";
 import type { Host } from "../schema/host.ts";
-import type { Service } from "../schema/service.ts";
+import { isHostService, type HostService } from "../schema/service.ts";
 import type { View } from "../schema/view.ts";
 import { answerFor } from "../schema/view.ts";
 import { assertNotCollapsed } from "./collapse.ts";
@@ -50,7 +54,7 @@ function compare(a: string, b: string): number {
 
 /** Checks one service contributes to one view; empty when the view has no
  * answer for its host. */
-function checksFor(service: Service, host: Host, view: View): ProbeCheck[] {
+function checksFor(service: HostService, host: Host, view: View): ProbeCheck[] {
   const address = answerFor(view, host);
   if (address === undefined) return [];
 
@@ -79,7 +83,8 @@ function checksFor(service: Service, host: Host, view: View): ProbeCheck[] {
 export function renderProbes(registry: Registry): ProbeManifest {
   const entities = allEntities(registry);
   const hosts = firstByName(entities.filter((entity) => entity.kind === "host"));
-  const services = [...firstByName(entities.filter((entity) => entity.kind === "service")).values()];
+  const services = [...firstByName(entities.filter((entity) => entity.kind === "service")).values()]
+    .filter(isHostService);
   const views = [...firstByName(entities.filter((entity) => entity.kind === "view")).values()];
 
   const rendered = views

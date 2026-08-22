@@ -7,12 +7,14 @@
  * the catch-all is owned by that contract; this renderer owns only the order
  * inside its own list.
  *
- * Derivation (v1): service entities only. Each service whose host has an
- * answer in the view (view.ts `answerFor`) becomes one exact-domain
- * `predefined` rule targeting sing-box 1.14.0-alpha.35 — the shape both
- * consuming gateways already use. No answer for the view → the name is
- * omitted from that view's file, never borrowed from another view. A view
- * with no answers renders `{ dnsRules: [] }` — a valid empty list, not null.
+ * Derivation (v1): service entities only. Each service with an answer in
+ * the view (view.ts `answerIn` — a host-backed name's computed address as
+ * `IN A`, a static answer as `IN A` / `IN CNAME` in its `public` view)
+ * becomes one exact-domain `predefined` rule targeting sing-box
+ * 1.14.0-alpha.35 — the shape both consuming gateways already use. No answer
+ * for the view → the name is omitted from that view's file, never borrowed
+ * from another view. A view with no answers renders `{ dnsRules: [] }` — a
+ * valid empty list, not null.
  *
  * First-match ordering: exact `domain` rules sort before `domain_suffix`
  * rules — a suffix rule ahead of an exact name under it would swallow the
@@ -46,7 +48,9 @@
  */
 
 import type { Registry, Entity } from "../schema/registry.ts";
-import { answerFor, type View } from "../schema/view.ts";
+import { isHostService, type Service } from "../schema/service.ts";
+import type { Host } from "../schema/host.ts";
+import { answerIn, type Answer, type View } from "../schema/view.ts";
 import { assertNotCollapsed } from "./collapse.ts";
 import type { JsonObject } from "../lib/canonical.ts";
 import { registerRenderer, type RenderedFile } from "./index.ts";
@@ -81,9 +85,31 @@ export function sortDnsRules<T extends JsonObject>(rules: readonly T[]): T[] {
   return [...exact.sort(byPattern), ...suffix.sort(byPattern)];
 }
 
-/** D12 rank: `org-site-band` → 0, unallocated/unknown → 1, `owner-subnet` → 2. */
+/** The zone-file RR string sing-box's `predefined` action takes. A CNAME
+ * target carries the trailing dot so it is absolute, never origin-relative. */
+function rrString(dnsName: string, answer: Answer): string {
+  const value = answer.type === "CNAME" ? `${answer.value}.` : answer.value;
+  return `${dnsName}. IN ${answer.type} ${value}`;
+}
+
+/** The service's host entity, or a loud failure for a dangling reference:
+ * silently skipping would render the name out of a gateway's table;
+ * integrity (`validate`) owns the diagnosis, the render must not lie. */
+function hostOf(service: Service, hosts: ReadonlyMap<string, Host>): Host | undefined {
+  if (!isHostService(service)) return undefined;
+  const host = hosts.get(service.host);
+  if (host === undefined) {
+    throw new Error(
+      `singbox: service "${service.name}" references missing host "${service.host}" — run validate`,
+    );
+  }
+  return host;
+}
+
+/** D12 rank: `org-site-band` → 0, unallocated/unknown (incl. public) → 1, `owner-subnet` → 2. */
 function viewRank(view: View, entities: readonly Entity[]): number {
   const scope = view.scope;
+  if (scope.kind === "public") return 1;
   const scopeEntity = entities.find((entity) =>
     scope.kind === "mesh"
       ? entity.kind === "mesh" && entity.name === scope.mesh
@@ -121,20 +147,12 @@ function render(registry: Registry): RenderedFile[] {
   const files = ordered.map(({ view }) => {
     const rules: ExactDnsRule[] = [];
     for (const service of services) {
-      const host = hosts.get(service.host);
-      if (host === undefined) {
-        // Silently skipping would render the name out of a gateway's table;
-        // integrity (`validate`) owns the diagnosis, the render must not lie.
-        throw new Error(
-          `singbox: service "${service.name}" references missing host "${service.host}" — run validate`,
-        );
-      }
-      const answer = answerFor(view, host);
+      const answer = answerIn(view, service, hostOf(service, hosts));
       if (answer === undefined) continue;
       rules.push({
         domain: [service.dnsName],
         action: "predefined",
-        answer: [`${service.dnsName}. IN A ${answer}`],
+        answer: [rrString(service.dnsName, answer)],
       });
     }
     emitted += rules.length;
@@ -168,19 +186,14 @@ function render(registry: Registry): RenderedFile[] {
       }
       const rules: ExactDnsRule[] = [];
       for (const service of services) {
-        const host = hosts.get(service.host);
-        if (host === undefined) {
-          throw new Error(
-            `singbox: service "${service.name}" references missing host "${service.host}" — run validate`,
-          );
-        }
+        const host = hostOf(service, hosts);
         for (const viewName of resolver.views) {
-          const answer = answerFor(viewByName.get(viewName)!, host);
+          const answer = answerIn(viewByName.get(viewName)!, service, host);
           if (answer === undefined) continue;
           rules.push({
             domain: [service.dnsName],
             action: "predefined",
-            answer: [`${service.dnsName}. IN A ${answer}`],
+            answer: [rrString(service.dnsName, answer)],
           });
           break; // first listed view with an answer wins; shadowed answers are never emitted
         }

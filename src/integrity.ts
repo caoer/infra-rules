@@ -22,7 +22,8 @@ import {
 } from "./lib/cidr.ts";
 import type { Entity, Registry } from "./schema/registry.ts";
 import { RegistrySchema } from "./schema/registry.ts";
-import { answerFor } from "./schema/view.ts";
+import { isHostService } from "./schema/service.ts";
+import { answerIn } from "./schema/view.ts";
 
 /**
  * Ranges retired from a fleet: appearing anywhere as live data is a hard
@@ -121,10 +122,10 @@ function checkDuplicateEntities(groups: Map<string, Located[]>, report: Reporter
   }
 }
 
-/** service.host → a declared host entity. */
+/** service.host → a declared host entity (static-answer services have none). */
 function checkServiceHostRefs(all: Located[], groups: Map<string, Located[]>, report: Reporter): void {
   for (const located of all) {
-    if (located.entity.kind !== "service") continue;
+    if (located.entity.kind !== "service" || !isHostService(located.entity)) continue;
     if (!groups.has(`host\u0000${located.entity.host}`)) {
       report(
         [...located.path, "host"],
@@ -258,24 +259,35 @@ function checkResolverViews(all: Located[], groups: Map<string, Located[]>, repo
 }
 
 /**
- * The set of views that answer for a service's host, computed the one lawful
- * way (`answerFor`). Undefined when the host reference does not resolve —
- * `[host-ref]` already reports that; these checks stay silent to avoid a
- * second issue for the same root cause.
+ * The set of views that answer for a service, computed the one lawful way
+ * (`answerIn`): a host-backed name answers where its host has an address, a
+ * static name answers in every `public` view. Undefined when a host
+ * reference does not resolve — `[host-ref]` already reports that; these
+ * checks stay silent to avoid a second issue for the same root cause.
  */
 function answerableViews(
   entity: Entity & { kind: "service" },
   all: Located[],
   groups: Map<string, Located[]>,
 ): Set<string> | undefined {
-  const host = groups.get(`host\u0000${entity.host}`)?.[0]?.entity;
-  if (host === undefined || host.kind !== "host") return undefined;
+  let host: Entity | undefined;
+  if (isHostService(entity)) {
+    host = groups.get(`host\u0000${entity.host}`)?.[0]?.entity;
+    if (host === undefined || host.kind !== "host") return undefined;
+  }
   const views = new Set<string>();
   for (const located of all) {
     if (located.entity.kind !== "view") continue;
-    if (answerFor(located.entity, host) !== undefined) views.add(located.entity.name);
+    if (answerIn(located.entity, entity, host as Extract<Entity, { kind: "host" }> | undefined) !== undefined) {
+      views.add(located.entity.name);
+    }
   }
   return views;
+}
+
+/** "host \"x\"" or "static answer" — what a service's answers come from. */
+function answerSource(service: Entity & { kind: "service" }): string {
+  return isHostService(service) ? `host "${service.host}"` : "its static answer";
 }
 
 /**
@@ -306,7 +318,7 @@ function checkServiceViewDeclarations(
       } else if (!answerable.has(viewName)) {
         report(
           [...located.path, "views", i],
-          `[service-views] ${ident(located)}: declared view "${viewName}" has no answer for host "${service.host}" — the name would silently drop out of that vantage (or promote another view's answer at a merged gateway); fix the host's address data or the declaration`,
+          `[service-views] ${ident(located)}: declared view "${viewName}" has no answer for ${answerSource(service)} — the name would silently drop out of that vantage (or promote another view's answer at a merged gateway); fix the ${isHostService(service) ? "host's address data" : "view's scope"} or the declaration`,
         );
       }
     });
@@ -316,7 +328,7 @@ function checkServiceViewDeclarations(
       if (!declared.has(viewName)) {
         report(
           [...located.path, "views"],
-          `[service-views] ${ident(located)}: view "${viewName}" answers for host "${service.host}" but is not declared — declarations are exact; add it or remove the host's address on that vantage`,
+          `[service-views] ${ident(located)}: view "${viewName}" answers for ${answerSource(service)} but is not declared — declarations are exact; add it or remove the ${isHostService(service) ? "host's address on that vantage" : "public view"}`,
         );
       }
     }
@@ -471,7 +483,8 @@ function eachCidrField(
 }
 
 /** Every IPv4-valued field, with its absolute path. `proxyExit.host` joins
- * only when it is IPv4-shaped (it may be a hostname). */
+ * only when it is IPv4-shaped (it may be a hostname); a static A answer
+ * joins as `answer.value`. */
 function eachIpField(
   all: Located[],
   visit: (located: Located, path: Path, ip: string, field: string) => void,
@@ -489,6 +502,9 @@ function eachIpField(
     }
     if (entity.kind === "proxyExit" && ipShaped.test(entity.host)) {
       visit(located, [...located.path, "host"], entity.host, "host");
+    }
+    if (entity.kind === "service" && !isHostService(entity) && entity.answer.type === "A") {
+      visit(located, [...located.path, "answer", "value"], entity.answer.value, "answer.value");
     }
   }
 }

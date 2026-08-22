@@ -211,3 +211,25 @@ describe("probes manifest — determinism and registration", () => {
     expect(proc.stdout.toString().trim().split(",")).toContain("probes");
   });
 });
+
+describe("probes — static-answer services contribute no checks", () => {
+  test("a public view renders an empty section and no static name appears in any view", () => {
+    const withPublic: Registry = {
+      ...registry,
+      hand: [
+        ...registry.hand,
+        { kind: "view", name: "internet", scope: { kind: "public" } },
+        {
+          kind: "service",
+          name: "entry",
+          dnsName: "entry.acme.test",
+          answer: { type: "A", value: "203.0.113.75" },
+        },
+      ],
+    };
+    const manifest = renderProbes(withPublic);
+    expect(manifest.views.find((v) => v.view === "internet")).toEqual({ view: "internet", checks: [] });
+    expect(JSON.stringify(manifest)).not.toContain("entry.acme.test");
+    expect(ProbeManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+});

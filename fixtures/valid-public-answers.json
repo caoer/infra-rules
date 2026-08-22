@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 1,
+  "snapshots": {
+    "acme": [
+      {
+        "kind": "host",
+        "name": "web-1",
+        "mesh": "mesh-a",
+        "easytier_ip": "10.20.1.7",
+        "networks": {
+          "lan-alpha": {
+            "ip": "192.0.2.10"
+          }
+        }
+      },
+      {
+        "kind": "host",
+        "name": "jump-1",
+        "roles": [
+          "jumper"
+        ],
+        "region": "ap",
+        "mesh": "mesh-a",
+        "easytier_ip": "10.20.1.8"
+      },
+      {
+        "kind": "mesh",
+        "name": "mesh-a",
+        "cidr": "10.20.0.0/14"
+      },
+      {
+        "kind": "network",
+        "name": "lan-alpha",
+        "cidr": "192.0.2.0/24",
+        "allocation": {
+          "vocabulary": "org-site-band",
+          "org": "acme",
+          "site": "hq",
+          "band": 2
+        }
+      }
+    ]
+  },
+  "hand": [
+    {
+      "kind": "host",
+      "name": "nas-1",
+      "networks": {
+        "lan-beta": {
+          "ip": "10.30.1.5"
+        }
+      }
+    },
+    {
+      "kind": "network",
+      "name": "lan-beta",
+      "cidr": "10.30.1.0/24",
+      "allocation": {
+        "vocabulary": "owner-subnet",
+        "owner": "zt",
+        "subnet": "10.30.1.0/24"
+      }
+    },
+    {
+      "kind": "view",
+      "name": "vpn",
+      "scope": {
+        "kind": "mesh",
+        "mesh": "mesh-a"
+      }
+    },
+    {
+      "kind": "view",
+      "name": "office",
+      "scope": {
+        "kind": "network",
+        "network": "lan-alpha"
+      }
+    },
+    {
+      "kind": "policy",
+      "name": "direct"
+    },
+    {
+      "kind": "policy",
+      "name": "proxy"
+    },
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "band-a",
+      "match": {
+        "match": "cidr",
+        "cidr": "10.20.0.0/14"
+      },
+      "policy": "proxy",
+      "priority": 100
+    },
+    {
+      "kind": "routing",
+      "entry": "intent",
+      "name": "corp-suffix",
+      "match": {
+        "match": "domain-suffix",
+        "suffix": "acme.test"
+      },
+      "policy": "direct",
+      "priority": 200
+    },
+    {
+      "kind": "routing",
+      "entry": "catch-all",
+      "name": "default",
+      "match": {
+        "match": "cidr",
+        "cidr": "10.99.0.0/16"
+      },
+      "policy": "direct",
+      "priority": 900
+    },
+    {
+      "kind": "service",
+      "name": "grafana",
+      "dnsName": "grafana.acme.test",
+      "host": "web-1",
+      "port": 3000,
+      "http": {
+        "path": "/",
+        "expectStatus": 200
+      },
+      "views": [
+        "office",
+        "vpn"
+      ]
+    },
+    {
+      "kind": "service",
+      "name": "jump-ssh",
+      "dnsName": "jump.acme.test",
+      "host": "jump-1",
+      "port": 22
+    },
+    {
+      "kind": "proxyExit",
+      "name": "exit-a",
+      "host": "203.0.113.7",
+      "port": 8388,
+      "method": "chacha20-ietf-poly1305",
+      "password": "fake-fixture-password"
+    },
+    {
+      "kind": "view",
+      "name": "public",
+      "scope": {
+        "kind": "public"
+      }
+    },
+    {
+      "kind": "service",
+      "name": "entry-hq",
+      "dnsName": "entry.hq.acme.test",
+      "answer": {
+        "type": "CNAME",
+        "value": "office-gw.upstream.test"
+      },
+      "views": [
+        "public"
+      ]
+    },
+    {
+      "kind": "service",
+      "name": "entry-site1",
+      "dnsName": "entry.site1.acme.test",
+      "answer": {
+        "type": "A",
+        "value": "203.0.113.75"
+      },
+      "views": [
+        "public"
+      ]
+    }
+  ]
+}

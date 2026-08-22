@@ -24,6 +24,20 @@ describe("integrity — valid registry", () => {
     expect(messages).toEqual([]);
   });
 
+  test("valid-public-answers.json — static A/CNAME services declared in a public view — produces zero violations", () => {
+    const { messages } = violationsOf("valid-public-answers.json");
+    expect(messages).toEqual([]);
+  });
+
+  test("invalid-static-answer-views.json — a static answer declared in a mesh view, a host name declared public — [service-views] both ways", () => {
+    const { messages, paths } = violationsOf("invalid-static-answer-views.json");
+    expect(messages.filter((m) => m.includes('declared view "vpn" has no answer for its static answer'))).toHaveLength(1);
+    expect(messages.filter((m) => m.includes('declared view "public" has no answer for host "web-1"'))).toHaveLength(1);
+    expect(messages).toHaveLength(2);
+    expect(paths).toContain("hand[13].views[1]");
+    expect(paths).toContain("hand[14].views[2]");
+  });
+
   test("valid-resolver.json — resolver + exact declaration + undeclared single-view service — produces zero violations", () => {
     const { messages } = violationsOf("valid-resolver.json");
     expect(messages).toEqual([]);

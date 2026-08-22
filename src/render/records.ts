@@ -1,18 +1,22 @@
 /**
  * DNS records, one static zone-like file per view.
  *
- * v1 renders a file and stops there — no Cloudflare API sync (D10). The file
- * IS the deliverable, and a human reads it to answer one question: "what does
- * this name resolve to from here?". So each file names its view, states the
- * vantage it speaks for, and lists its records sorted by DNS name.
+ * The file is the deliverable a human reads to answer one question: "what
+ * does this name resolve to from here?" — and the input `publish cloudflare`
+ * upserts into a zone (D1 supersedes the old "no API sync" ruling). So each
+ * file names its view, states the vantage it speaks for, and lists its
+ * records sorted by DNS name. A record is `{name, type, value}` plus `host`
+ * when the value was computed from a host entity; `type` is `A` for every
+ * computed answer and `A` or `CNAME` for a static one.
  *
  * THE RULE THIS RENDERER EXISTS TO KEEP: a mesh address is never emitted for
  * a non-mesh vantage. It is kept by construction, not by a check here — every
- * value comes from `answerFor` (Unit 1), the only function that can turn a
- * (view, host) pair into an address, and it can reach only the address field
- * its own scope names. When it returns `undefined` the host simply has no
- * answer in this view and the record is OMITTED — there is no default, no
- * fallback to another view's address, and no "closest" address.
+ * value comes from `answerIn` (Unit 1), the only function that can turn a
+ * (view, service) pair into an answer: a host-backed service reaches only
+ * the address field its view's scope names, and a static answer surfaces
+ * only in a `public` view. When it returns `undefined` the name simply has
+ * no answer in this view and the record is OMITTED — there is no default,
+ * no fallback to another view's address, and no "closest" address.
  */
 
 import { registerRenderer, type RenderedFile } from "./index.ts";
@@ -20,7 +24,8 @@ import { assertNotCollapsed } from "./collapse.ts";
 import type { JsonObject } from "../lib/canonical.ts";
 import type { Entity, Registry } from "../schema/registry.ts";
 import type { Host } from "../schema/host.ts";
-import { answerFor, type View } from "../schema/view.ts";
+import { isHostService } from "../schema/service.ts";
+import { answerIn, type View } from "../schema/view.ts";
 
 /** Every entity, both sections. Order is irrelevant — output is name-sorted. */
 function entities(registry: Registry): Entity[] {
@@ -34,9 +39,14 @@ function compare(a: string, b: string): number {
 /** The view's vantage, restated in the file so it is readable standalone. */
 function scopeOf(view: View): JsonObject {
   const scope = view.scope;
-  return scope.kind === "mesh"
-    ? { kind: "mesh", mesh: scope.mesh }
-    : { kind: "network", network: scope.network };
+  switch (scope.kind) {
+    case "mesh":
+      return { kind: "mesh", mesh: scope.mesh };
+    case "network":
+      return { kind: "network", network: scope.network };
+    case "public":
+      return { kind: "public" };
+  }
 }
 
 export function renderRecords(registry: Registry): RenderedFile[] {
@@ -61,8 +71,8 @@ export function renderRecords(registry: Registry): RenderedFile[] {
     const records: JsonObject[] = [];
 
     for (const service of services) {
-      const host = hosts.get(service.host);
-      if (host === undefined) {
+      const host = isHostService(service) ? hosts.get(service.host) : undefined;
+      if (isHostService(service) && host === undefined) {
         // Integrity (Unit 2) rejects this, but `render` parses with the bare
         // envelope schema. Throwing beats omitting: a missing record would
         // read as "this name does not resolve here", which is a lie.
@@ -71,10 +81,15 @@ export function renderRecords(registry: Registry): RenderedFile[] {
         );
       }
 
-      const address = answerFor(view, host);
-      if (address === undefined) continue; // no answer in this view — omit
+      const answer = answerIn(view, service, host);
+      if (answer === undefined) continue; // no answer in this view — omit
 
-      records.push({ name: service.dnsName, type: "A", value: address, host: host.name });
+      records.push({
+        name: service.dnsName,
+        type: answer.type,
+        value: answer.value,
+        ...(answer.host === undefined ? {} : { host: answer.host }),
+      });
     }
 
     emitted += records.length;
