@@ -182,6 +182,32 @@ type Member = Host & { easytier_ip: string };
 
 const byIp = (a: Member, b: Member): number => ipToUint32(a.easytier_ip) - ipToUint32(b.easytier_ip);
 
+/**
+ * One `[Proxy]` line. Shape: `name = ss, host, port, encrypt-method=…,
+ * password="…"[, shadow-tls-password="…", shadow-tls-sni=…, shadow-tls-version=3]
+ * [, extras…]`. Per-exit `extras` replace the layout-wide `proxyExtras`;
+ * absent, the layout string rides verbatim (byte parity with the
+ * predecessor generator, D19).
+ */
+export function proxyLine(exit: ProxyExit, layout: SurgeLayout): string {
+  const parts = [
+    `${exit.name} = ss`,
+    exit.host,
+    String(exit.port),
+    `encrypt-method=${exit.method}`,
+    `password="${exit.password}"`,
+  ];
+  if (exit.shadowTls !== undefined) {
+    parts.push(
+      `shadow-tls-password="${exit.shadowTls.password}"`,
+      `shadow-tls-sni=${exit.shadowTls.sni}`,
+      `shadow-tls-version=${exit.shadowTls.version}`,
+    );
+  }
+  parts.push(...(exit.extras ?? [layout.proxyExtras]));
+  return parts.join(", ");
+}
+
 export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRender {
   const entities = allEntities(registry);
   const mesh = ownerSubnetMesh(entities);
@@ -302,10 +328,7 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
   lines.push("[Proxy]");
   lines.push("# Proxy exits: jumpers in region order, then spares");
   for (const exit of proxies) {
-    lines.push(
-      `${exit.name} = ss, ${exit.host}, ${exit.port}, encrypt-method=${exit.method}, ` +
-        `password="${exit.password}", ${layout.proxyExtras}`,
-    );
+    lines.push(proxyLine(exit, layout));
   }
   lines.push("");
 

@@ -9,6 +9,7 @@ import {
   tier1Strip,
   type SurgeLayout,
 } from "../../src/render/surge.ts";
+import { ProxyExitSchema } from "../../src/schema/proxy-exit.ts";
 import type { Registry } from "../../src/schema/registry.ts";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -150,7 +151,63 @@ describe("surge renderer — tier-1 (D19)", () => {
     const { registry, layout } = await loadInputs();
     const { text } = renderSurge(registry, layout);
     expect(text).toContain('password="fake-pw-east"');
+    expect(text).toContain('shadow-tls-password="fake-stls-pw"');
     expect(tier1Strip(text)).not.toContain("password");
+  });
+});
+
+describe("surge renderer — per-exit shape (shadow-tls, extras)", () => {
+  test("a plain exit carries the layout-wide proxyExtras verbatim (D19 parity)", async () => {
+    const { registry, layout } = await loadInputs();
+    const { text } = renderSurge(registry, layout);
+    expect(text).toContain(
+      'exit-east-1 = ss, 192.0.2.10, 16228, encrypt-method=fake-method-2022, password="fake-pw-east", tfo=true, udp-relay=true',
+    );
+  });
+
+  test("a shadow-tls exit emits the three shadow-tls options after the password; extras [] drops the layout extras", async () => {
+    const { registry, layout } = await loadInputs();
+    const { text } = renderSurge(registry, layout);
+    expect(text).toContain(
+      'exit-west-2 = ss, 192.0.2.13, 16228, encrypt-method=fake-method-2022, password="fake-pw-spare", ' +
+        'shadow-tls-password="fake-stls-pw", shadow-tls-sni=cdn.example.test, shadow-tls-version=3',
+    );
+    const line = text.split("\n").find((l) => l.startsWith("exit-west-2 = "))!;
+    expect(line.endsWith("shadow-tls-version=3")).toBe(true);
+    expect(line).not.toContain("udp-relay");
+  });
+
+  test("per-exit extras replace the layout extras, in order, and a template password rides verbatim", async () => {
+    const { registry, layout } = await loadInputs();
+    const templated: Registry = {
+      ...registry,
+      hand: registry.hand.map((entity) =>
+        entity.kind === "proxyExit" && entity.name === "exit-north-1"
+          ? { ...entity, password: "fake-${SERVER_PSK}:${USER_PSK}", extras: ["udp-relay=true", "tfo=false"] }
+          : entity,
+      ),
+    };
+    const { text } = renderSurge(templated, layout);
+    expect(text).toContain(
+      'exit-north-1 = ss, 192.0.2.12, 16228, encrypt-method=fake-method-2022, password="fake-${SERVER_PSK}:${USER_PSK}", udp-relay=true, tfo=false',
+    );
+  });
+
+  test("schema: shadowTls is strict and v3-only; extras elements are non-empty", () => {
+    const base = {
+      kind: "proxyExit",
+      name: "x",
+      host: "192.0.2.1",
+      port: 1,
+      method: "m",
+      password: "fake-p",
+    };
+    expect(ProxyExitSchema.safeParse({ ...base, shadowTls: { password: "fake-s", sni: "a.test", version: 3 } }).success).toBe(true);
+    expect(ProxyExitSchema.safeParse({ ...base, shadowTls: { password: "fake-s", sni: "a.test", version: 2 } }).success).toBe(false);
+    expect(ProxyExitSchema.safeParse({ ...base, shadowTls: { password: "fake-s", sni: "a.test", version: 3, alpn: "h2" } }).success).toBe(false);
+    expect(ProxyExitSchema.safeParse({ ...base, shadowTls: { sni: "a.test", version: 3 } }).success).toBe(false);
+    expect(ProxyExitSchema.safeParse({ ...base, extras: [] }).success).toBe(true);
+    expect(ProxyExitSchema.safeParse({ ...base, extras: [""] }).success).toBe(false);
   });
 });
 
