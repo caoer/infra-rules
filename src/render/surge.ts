@@ -14,6 +14,17 @@
  * artifact (D19) — the intents section is the first deliberate content change
  * past it, accepted by semantic parity with the hand rules it replaces.
  *
+ * PEER REGISTRIES contribute `[Host]` NAMES ONLY. A profile that routes
+ * another org's mesh space (a `routing` intent over their range) must also
+ * RESOLVE their names, or Surge asks a public resolver, gets a public
+ * answer, and the range rule never matches — the same failure the local
+ * service aliases exist to close, one org over. The peer's own routing
+ * intent, policies, proxy exits and pins are NOT read: this profile's
+ * routing authority stays in its own registry, so a peer publish can add a
+ * name but can never silently re-route this profile. Peers are also why the
+ * two registries stay separate files — copying a peer's hosts into this
+ * registry's hand section is `[dup-entity]` at validate time (D4).
+ *
  * NOT in the renderer registry (`render/index.ts`) on purpose: this artifact
  * carries proxy credentials, so it must never be emitted into the generic
  * `render --out` tree that consuming repos commit. It renders only through
@@ -177,6 +188,8 @@ export interface SurgeStats {
   catchAlls: number;
   hosts: number;
   serviceNames: number;
+  /** `[Host]` lines contributed by peer registries, across all peers. */
+  peerNames: number;
 }
 
 /** A rendered profile plus the counts the CLI reports. */
@@ -258,6 +271,77 @@ function serviceMeshAliases(entities: readonly Entity[], meshName: string): Serv
   return [...byDns.values()].sort((a, b) => (a.dnsName < b.dnsName ? -1 : 1));
 }
 
+/** One `[Host]` line contributed by a peer registry. `origin` names the
+ *  entity it came from, so a collision message can point at both sides. */
+interface PeerName {
+  name: string;
+  value: string;
+  origin: string;
+}
+
+/** Every `[Host]` name one peer registry contributes, in emit order:
+ *  the peer mesh's magic-DNS names, then its service names.
+ *
+ *  Peer magic-DNS is NOT restricted to ssh-inventory the way the local
+ *  member set is — the byte-parity contract (D19) constrains the local pin
+ *  file, and a peer contributes no pins. An overlay-sourced peer host that
+ *  a service points at must resolve like any other.
+ *
+ *  Static-answer services ARE included here, unlike the local mesh aliases:
+ *  a peer's literal answer is the only answer this profile can have for
+ *  that name (it has no vantage inside the peer's LAN to compute one), and
+ *  its `public` scope is the peer's statement about its own views, not a
+ *  bar on a foreign profile writing the name down. */
+function peerNames(registry: Registry, hostSuffix: string): { mesh: string; names: PeerName[] } {
+  const entities = allEntities(registry);
+  const mesh = ownerSubnetMesh(entities);
+  const names: PeerName[] = [];
+
+  const hosts = new Map<string, Host>();
+  for (const entity of entities) {
+    if (entity.kind === "host" && !hosts.has(entity.name)) hosts.set(entity.name, entity);
+  }
+
+  const meshHosts = [...hosts.values()]
+    .filter((host): host is Member => host.mesh === mesh.name && host.easytier_ip !== undefined)
+    .sort(byIp);
+  for (const host of meshHosts) {
+    names.push({
+      name: `${host.name}${hostSuffix}`,
+      value: host.easytier_ip,
+      origin: `host "${host.name}"`,
+    });
+  }
+
+  const services = entities
+    .filter((entity): entity is Service => entity.kind === "service")
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const service of services) {
+    if (isHostService(service)) {
+      const host = hosts.get(service.host);
+      if (host === undefined) {
+        fail(`peer service "${service.name}" references undeclared host "${service.host}"`);
+      }
+      if (host.mesh !== mesh.name || host.easytier_ip === undefined) continue;
+      names.push({
+        name: service.dnsName,
+        value: host.easytier_ip,
+        origin: `service "${service.name}"`,
+      });
+      continue;
+    }
+    // Static answer: A → the literal address, CNAME → a Surge [Host] alias
+    // (`foo.com = bar.com`), which is the peer's own indirection preserved.
+    names.push({
+      name: service.dnsName,
+      value: service.answer.value,
+      origin: `service "${service.name}"`,
+    });
+  }
+
+  return { mesh: mesh.name, names };
+}
+
 /**
  * One `[Proxy]` line. Shape: `name = ss, host, port, encrypt-method=…,
  * password="…"[, shadow-tls-password="…", shadow-tls-sni=…, shadow-tls-version=3]
@@ -284,7 +368,11 @@ export function proxyLine(exit: ProxyExit, layout: SurgeLayout): string {
   return parts.join(", ");
 }
 
-export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRender {
+export function renderSurge(
+  registry: Registry,
+  layout: SurgeLayout,
+  peers: readonly Registry[] = [],
+): SurgeRender {
   const entities = allEntities(registry);
   const mesh = ownerSubnetMesh(entities);
 
@@ -503,8 +591,34 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
         );
       }
       if (existing !== undefined) continue;
+      memberHostNames.set(alias.dnsName, alias.ip);
       lines.push(`${alias.dnsName} = ${alias.ip}`);
     }
+  }
+  // Peers last: a local name always wins the line, and a peer that would
+  // change one is a hard failure. Silent precedence would let a peer's
+  // publish move this profile's traffic without a diff anyone reads.
+  let peerCount = 0;
+  for (const peer of peers) {
+    const { mesh: peerMesh, names } = peerNames(peer, layout.hostSuffix);
+    const emitted: string[] = [];
+    for (const entry of names) {
+      const existing = memberHostNames.get(entry.name);
+      if (existing !== undefined && existing !== entry.value) {
+        fail(
+          `peer mesh "${peerMesh}" ${entry.origin} maps "${entry.name}" to ${entry.value}, ` +
+            `but this profile already maps it to ${existing} — ` +
+            `one name cannot carry two answers in [Host]`,
+        );
+      }
+      if (existing !== undefined) continue;
+      memberHostNames.set(entry.name, entry.value);
+      emitted.push(`${entry.name} = ${entry.value}`);
+    }
+    if (emitted.length === 0) continue;
+    lines.push(`# Peer mesh: ${peerMesh} — names only, routed by this profile's own intents`);
+    lines.push(...emitted);
+    peerCount += emitted.length;
   }
   lines.push("");
 
@@ -519,6 +633,7 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
       catchAlls: catchAlls.length,
       hosts: members.length,
       serviceNames: aliases.length,
+      peerNames: peerCount,
     },
   };
 }

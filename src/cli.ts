@@ -32,9 +32,14 @@ commands:
   diff   --registry <file> --out <dir> [--views a,b]
                                          compare artifacts (0 same, 1 differ, 2 failed)
   render-surge --registry <file> --layout <file> --out <file>
+               [--peer-registry <file>...]
                                          write the Surge dconf to one explicit file
                                          (exit 0 ok, 2 failed); never part of \`render\` —
-                                         the artifact carries proxy credentials
+                                         the artifact carries proxy credentials;
+                                         --peer-registry adds another org's [Host] NAMES
+                                         (its mesh magic-DNS + service names) and nothing
+                                         else — no exits, pins, policies or routing intent,
+                                         so a peer publish can never re-route this profile
   publish cloudflare --zone <zone> --records <file> [--records <file>...] [--dry-run]
                                          upsert rendered records/<view>.json files into a
                                          Cloudflare zone (exit 0 ok, 2 failed); token from
@@ -96,6 +101,7 @@ const COMMANDS: Record<string, Handler> = {
       registryPath: required(flags, "registry"),
       layoutPath: required(flags, "layout"),
       outPath: required(flags, "out"),
+      peerRegistryPaths: flags.get("peer-registry") ?? [],
     }),
   "publish cloudflare": (flags) =>
     runPublishCloudflare({

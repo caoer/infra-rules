@@ -52,8 +52,9 @@ From a consumer: `bun x github:caoer/infra-rules#<tag> <command>`. In the engine
   artifacts. `--views` is REQUIRED when `--out` is a per-org repo.
 - `diff --registry <file> --out <dir> [--views a,b]` — compare without writing.
   Exit 0 same, 1 differ, 2 failed.
-- `render-surge --registry <file> --layout <file> --out <file>` — Surge dconf to one
-  explicit file. Deliberately not part of `render`: the artifact carries proxy credentials.
+- `render-surge --registry <file> --layout <file> --out <file> [--peer-registry <file>...]`
+  — Surge dconf to one explicit file. Deliberately not part of `render`: the artifact
+  carries proxy credentials. `--peer-registry` is repeatable; see "Peer registries" below.
 
 Every command refuses loudly and writes nothing on a parse or validation error — a failed
 run never corrupts the artifact on disk.
@@ -108,6 +109,42 @@ then every registry service whose host has an address on the owner-subnet
 mesh (`dnsName = easytier_ip`). Overlay-sourced hosts stay out of the pin
 set but their services still resolve — otherwise Surge falls through to a
 wildcard resolver and the `/32` pin never matches.
+
+## Peer registries — `--peer-registry`
+
+A profile that routes ANOTHER org's mesh space must also resolve that org's
+names, or Surge asks a public resolver, gets a public answer, and the range
+rule never matches. `--peer-registry <file>` (repeatable) adds that org's
+`[Host]` names to this profile.
+
+| Crosses over | Never crosses over |
+|---|---|
+| peer mesh hosts as `<name><hostSuffix>` | proxy exits |
+| peer host-backed services (`dnsName = easytier_ip`) | `/32` pins |
+| peer static-answer services (A verbatim, CNAME as a Surge `[Host]` alias) | routing intents |
+| — | policies / policy groups |
+
+Routing authority stays in the consumer's OWN registry: a peer publish can
+add a name, never re-route the profile. Peer lines are emitted last under a
+`# Peer mesh: <name>` comment; a local name always wins, and a peer that
+would map an existing name to a DIFFERENT value is a hard failure (an
+identical value is silently deduped).
+
+Peer magic-DNS is not restricted to `ssh-inventory` the way the local member
+set is — the byte-parity contract (D19) constrains the local pin file, and a
+peer contributes no pins.
+
+**Why a flag and not a merge:** copying a peer's hosts or services into this
+registry's hand section is `[dup-entity]` at validate time (D4) — the merged
+envelope sees the same name twice. The two registries stay separate files and
+the peer stays sole SoT for its own data.
+
+```bash
+render-surge --registry zt.local.json \
+             --peer-registry cos.local.json \
+             --layout profiles/surge-layout.json \
+             --out profiles/mesh-locus.generated.dconf
+```
 
 Per-exit shape lives on the `proxyExit` entity, not the layout (v0.12.0): `shadowTls:
 {password, sni, version: 3}` emits `shadow-tls-password/-sni/-version` after the

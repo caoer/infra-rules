@@ -23,6 +23,73 @@ async function loadInputs(): Promise<{ registry: Registry; layout: SurgeLayout }
   return { registry, layout };
 }
 
+/**
+ * A second org's registry, as `--peer-registry` supplies it: its own
+ * owner-subnet mesh, hosts on it, host-backed and static-answer services —
+ * plus an exit, a policy and a routing intent that must NOT cross over.
+ */
+function peerRegistry(): Registry {
+  return {
+    schemaVersion: 1,
+    snapshots: {
+      peerorg: [
+        {
+          kind: "mesh",
+          name: "peer-mesh",
+          cidr: "10.71.0.0/16",
+          allocation: { vocabulary: "owner-subnet", owner: "peerorg", subnet: "10.71.0.0/16" },
+        },
+        {
+          kind: "host",
+          name: "peer-gw",
+          mesh: "peer-mesh",
+          easytier_ip: "10.71.1.10",
+          source: "ssh-inventory",
+        },
+        {
+          kind: "host",
+          name: "peer-svc",
+          mesh: "peer-mesh",
+          easytier_ip: "10.71.1.50",
+          source: "mesh-overlay",
+        },
+      ],
+    },
+    hand: [
+      { kind: "policy", name: "peer-policy", description: "PG_peer" },
+      {
+        kind: "proxyExit",
+        name: "peer-exit",
+        host: "198.51.100.9",
+        port: 443,
+        method: "aes-128-gcm",
+        password: "fake-pw-peer",
+      },
+      {
+        kind: "routing",
+        entry: "intent",
+        name: "peer-space",
+        priority: 1,
+        match: { match: "cidr", cidr: "10.71.0.0/16" },
+        policy: "peer-policy",
+      },
+      { kind: "service", name: "peer-svc-name", dnsName: "svc.peer.example", host: "peer-svc" },
+      {
+        kind: "service",
+        name: "peer-lan",
+        dnsName: "lan.peer.example",
+        answer: { type: "A", value: "192.168.77.10" },
+      },
+      {
+        kind: "service",
+        name: "peer-edge",
+        dnsName: "edge.peer.example",
+        answer: { type: "CNAME", value: "edge.public.example" },
+      },
+    ],
+  };
+}
+
 describe("surge renderer — tier-1 (D19)", () => {
   test("stripped render is byte-identical to the committed golden", async () => {
     const { registry, layout } = await loadInputs();
@@ -51,6 +118,7 @@ describe("surge renderer — tier-1 (D19)", () => {
       catchAlls: 3,
       hosts: 8,
       serviceNames: 0,
+      peerNames: 0,
     });
   });
 
@@ -242,6 +310,66 @@ describe("surge renderer — tier-1 (D19)", () => {
     expect(text).not.toContain("lan-only.acme.test");
     // overlay host still has no member pin / magic-DNS line
     expect(text).not.toContain("ghost-1.mesh.test");
+  });
+
+  test("a peer registry contributes [Host] names and nothing else", async () => {
+    const { registry, layout } = await loadInputs();
+    const { text, stats } = renderSurge(registry, layout, [peerRegistry()]);
+
+    // magic-DNS for the peer's mesh hosts, under THIS layout's suffix
+    expect(text).toContain("peer-svc.mesh.test = 10.71.1.50");
+    expect(text).toContain("peer-gw.mesh.test = 10.71.1.10");
+    // host-backed service → its host's peer-mesh address
+    expect(text).toContain("svc.peer.example = 10.71.1.50");
+    // static answers ride: A verbatim, CNAME as a Surge [Host] alias
+    expect(text).toContain("lan.peer.example = 192.168.77.10");
+    expect(text).toContain("edge.peer.example = edge.public.example");
+    expect(stats.peerNames).toBe(5);
+    expect(text).toContain("# Peer mesh: peer-mesh");
+
+    // …and nothing else crossed over: no exit, no pin, no intent, no policy
+    expect(text).not.toContain("peer-exit");
+    expect(text).not.toContain("10.71.1.50/32");
+    expect(text).not.toContain("PG_peer");
+    expect(text).not.toContain("10.71.0.0/16");
+    const { stats: base } = renderSurge(registry, layout);
+    expect(stats.proxies).toBe(base.proxies);
+    expect(stats.pins).toBe(base.pins);
+    expect(stats.intents).toBe(base.intents);
+    expect(stats.hosts).toBe(base.hosts);
+  });
+
+  test("no peers renders byte-identically to the peerless call", async () => {
+    const { registry, layout } = await loadInputs();
+    expect(renderSurge(registry, layout, []).text).toBe(renderSurge(registry, layout).text);
+  });
+
+  test("a peer name that would change a local answer is a hard failure", async () => {
+    const { registry, layout } = await loadInputs();
+    const peer = peerRegistry();
+    // The peer claims a name this profile already answers, at another address.
+    peer.hand.push({
+      kind: "service" as const,
+      name: "peer-claims-local",
+      dnsName: "pin-e1.mesh.test",
+      answer: { type: "A" as const, value: "10.71.1.99" },
+    });
+    expect(() => renderSurge(registry, layout, [peer])).toThrow(
+      /peer mesh "peer-mesh" service "peer-claims-local" maps "pin-e1\.mesh\.test" to 10\.71\.1\.99, but this profile already maps it to 10\.98\.1\.3/,
+    );
+  });
+
+  test("a peer name that agrees with the local answer is emitted once", async () => {
+    const { registry, layout } = await loadInputs();
+    const peer = peerRegistry();
+    peer.hand.push({
+      kind: "service" as const,
+      name: "peer-agrees",
+      dnsName: "pin-e1.mesh.test",
+      answer: { type: "A" as const, value: "10.98.1.3" },
+    });
+    const { text } = renderSurge(registry, layout, [peer]);
+    expect(text.match(/^pin-e1\.mesh\.test = /gm)).toHaveLength(1);
   });
 
   test("static-answer services never enter the mesh [Host] block", async () => {
