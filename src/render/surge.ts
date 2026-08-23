@@ -14,16 +14,19 @@
  * artifact (D19) — the intents section is the first deliberate content change
  * past it, accepted by semantic parity with the hand rules it replaces.
  *
- * PEER REGISTRIES contribute `[Host]` NAMES ONLY. A profile that routes
- * another org's mesh space (a `routing` intent over their range) must also
- * RESOLVE their names, or Surge asks a public resolver, gets a public
- * answer, and the range rule never matches — the same failure the local
- * service aliases exist to close, one org over. The peer's own routing
- * intent, policies, proxy exits and pins are NOT read: this profile's
- * routing authority stays in its own registry, so a peer publish can add a
- * name but can never silently re-route this profile. Peers are also why the
- * two registries stay separate files — copying a peer's hosts into this
- * registry's hand section is `[dup-entity]` at validate time (D4).
+ * PEER REGISTRIES contribute the `[Host]` names another org DECLARED as
+ * services, and nothing else. A profile that routes another org's mesh
+ * space (a `routing` intent over their range) must also RESOLVE their
+ * names, or Surge asks a public resolver, gets a public answer, and the
+ * range rule never matches — the same failure the local service aliases
+ * exist to close, one org over. The peer's own routing intent, policies,
+ * proxy exits and pins are NOT read: this profile's routing authority stays
+ * in its own registry, so a peer publish can add a name but can never
+ * silently re-route this profile. A peer's HOSTS contribute no magic-DNS
+ * line either — `<name><hostSuffix>` describes this overlay's resolver, and
+ * a peer host has no entry in it. Peers are also why the two registries
+ * stay separate files: copying a peer's hosts into this registry's hand
+ * section is `[dup-entity]` at validate time (D4).
  *
  * NOT in the renderer registry (`render/index.ts`) on purpose: this artifact
  * carries proxy credentials, so it must never be emitted into the generic
@@ -279,20 +282,23 @@ interface PeerName {
   origin: string;
 }
 
-/** Every `[Host]` name one peer registry contributes, in emit order:
- *  the peer mesh's magic-DNS names, then its service names.
+/** Every `[Host]` name one peer registry contributes: its DECLARED service
+ *  names, and only those.
  *
- *  Peer magic-DNS is NOT restricted to ssh-inventory the way the local
- *  member set is — the byte-parity contract (D19) constrains the local pin
- *  file, and a peer contributes no pins. An overlay-sourced peer host that
- *  a service points at must resolve like any other.
+ *  Peer HOSTS contribute no magic-DNS line. `<name><hostSuffix>` is a claim
+ *  about THIS overlay's own resolver — a peer's hosts have no entry in it,
+ *  so synthesizing `<peer-host><hostSuffix>` invents a name that resolves
+ *  nowhere else in the world. A `[Host]` block is a local override, so the
+ *  invention would work here and only here, which is what makes it a trap
+ *  rather than a nicety. A peer's names are the ones it DECLARED as
+ *  services.
  *
- *  Static-answer services ARE included here, unlike the local mesh aliases:
- *  a peer's literal answer is the only answer this profile can have for
- *  that name (it has no vantage inside the peer's LAN to compute one), and
- *  its `public` scope is the peer's statement about its own views, not a
- *  bar on a foreign profile writing the name down. */
-function peerNames(registry: Registry, hostSuffix: string): { mesh: string; names: PeerName[] } {
+ *  Static-answer services ARE included, unlike the local mesh aliases: a
+ *  peer's literal answer is the only answer this profile can have for that
+ *  name (it has no vantage inside the peer's LAN to compute one), and its
+ *  `public` scope is the peer's statement about its own views, not a bar on
+ *  a foreign profile writing the name down. */
+function peerNames(registry: Registry): { mesh: string; names: PeerName[] } {
   const entities = allEntities(registry);
   const mesh = ownerSubnetMesh(entities);
   const names: PeerName[] = [];
@@ -300,17 +306,6 @@ function peerNames(registry: Registry, hostSuffix: string): { mesh: string; name
   const hosts = new Map<string, Host>();
   for (const entity of entities) {
     if (entity.kind === "host" && !hosts.has(entity.name)) hosts.set(entity.name, entity);
-  }
-
-  const meshHosts = [...hosts.values()]
-    .filter((host): host is Member => host.mesh === mesh.name && host.easytier_ip !== undefined)
-    .sort(byIp);
-  for (const host of meshHosts) {
-    names.push({
-      name: `${host.name}${hostSuffix}`,
-      value: host.easytier_ip,
-      origin: `host "${host.name}"`,
-    });
   }
 
   const services = entities
@@ -600,7 +595,7 @@ export function renderSurge(
   // publish move this profile's traffic without a diff anyone reads.
   let peerCount = 0;
   for (const peer of peers) {
-    const { mesh: peerMesh, names } = peerNames(peer, layout.hostSuffix);
+    const { mesh: peerMesh, names } = peerNames(peer);
     const emitted: string[] = [];
     for (const entry of names) {
       const existing = memberHostNames.get(entry.name);
@@ -616,7 +611,9 @@ export function renderSurge(
       emitted.push(`${entry.name} = ${entry.value}`);
     }
     if (emitted.length === 0) continue;
-    lines.push(`# Peer mesh: ${peerMesh} — names only, routed by this profile's own intents`);
+    lines.push(
+      `# Peer mesh: ${peerMesh} — declared service names, routed by this profile's own intents`,
+    );
     lines.push(...emitted);
     peerCount += emitted.length;
   }

@@ -114,15 +114,14 @@ wildcard resolver and the `/32` pin never matches.
 
 A profile that routes ANOTHER org's mesh space must also resolve that org's
 names, or Surge asks a public resolver, gets a public answer, and the range
-rule never matches. `--peer-registry <file>` (repeatable) adds that org's
-`[Host]` names to this profile.
+rule never matches. `--peer-registry <file>` (repeatable) adds the names that
+org DECLARED as services.
 
 | Crosses over | Never crosses over |
 |---|---|
-| peer mesh hosts as `<name><hostSuffix>` | proxy exits |
-| peer host-backed services (`dnsName = easytier_ip`) | `/32` pins |
-| peer static-answer services (A verbatim, CNAME as a Surge `[Host]` alias) | routing intents |
-| — | policies / policy groups |
+| peer host-backed services (`dnsName = easytier_ip`) | peer hosts as `<name><hostSuffix>` |
+| peer static-answer services (A verbatim, CNAME as a Surge `[Host]` alias) | proxy exits, `/32` pins |
+| — | routing intents, policies / policy groups |
 
 Routing authority stays in the consumer's OWN registry: a peer publish can
 add a name, never re-route the profile. Peer lines are emitted last under a
@@ -130,9 +129,12 @@ add a name, never re-route the profile. Peer lines are emitted last under a
 would map an existing name to a DIFFERENT value is a hard failure (an
 identical value is silently deduped).
 
-Peer magic-DNS is not restricted to `ssh-inventory` the way the local member
-set is — the byte-parity contract (D19) constrains the local pin file, and a
-peer contributes no pins.
+**A peer HOST contributes no magic-DNS line.** `<name><hostSuffix>` is a claim
+about THIS overlay's resolver; a foreign host has no entry in it, so
+`<peer-host><hostSuffix>` would be a name that resolves nowhere else in the
+world. `[Host]` is a local override, so the invention would work here and
+only here — which makes it a trap, not a nicety. Declared services are the
+peer's real names; those are what ride.
 
 **Why a flag and not a merge:** copying a peer's hosts or services into this
 registry's hand section is `[dup-entity]` at validate time (D4) — the merged

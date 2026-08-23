@@ -312,20 +312,22 @@ describe("surge renderer — tier-1 (D19)", () => {
     expect(text).not.toContain("ghost-1.mesh.test");
   });
 
-  test("a peer registry contributes [Host] names and nothing else", async () => {
+  test("a peer registry contributes its declared service names and nothing else", async () => {
     const { registry, layout } = await loadInputs();
     const { text, stats } = renderSurge(registry, layout, [peerRegistry()]);
 
-    // magic-DNS for the peer's mesh hosts, under THIS layout's suffix
-    expect(text).toContain("peer-svc.mesh.test = 10.71.1.50");
-    expect(text).toContain("peer-gw.mesh.test = 10.71.1.10");
     // host-backed service → its host's peer-mesh address
     expect(text).toContain("svc.peer.example = 10.71.1.50");
     // static answers ride: A verbatim, CNAME as a Surge [Host] alias
     expect(text).toContain("lan.peer.example = 192.168.77.10");
     expect(text).toContain("edge.peer.example = edge.public.example");
-    expect(stats.peerNames).toBe(5);
+    expect(stats.peerNames).toBe(3);
     expect(text).toContain("# Peer mesh: peer-mesh");
+
+    // A peer HOST never becomes a magic-DNS name: <name><hostSuffix> claims
+    // this overlay's resolver, which has no entry for a foreign host.
+    expect(text).not.toContain("peer-svc.mesh.test");
+    expect(text).not.toContain("peer-gw.mesh.test");
 
     // …and nothing else crossed over: no exit, no pin, no intent, no policy
     expect(text).not.toContain("peer-exit");
