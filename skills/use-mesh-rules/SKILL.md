@@ -109,6 +109,13 @@ mesh (`dnsName = easytier_ip`). Overlay-sourced hosts stay out of the pin
 set but their services still resolve — otherwise Surge falls through to a
 wildcard resolver and the `/32` pin never matches.
 
+Per-exit shape lives on the `proxyExit` entity, not the layout (v0.12.0): `shadowTls:
+{password, sni, version: 3}` emits `shadow-tls-password/-sni/-version` after the
+password; `extras: ["udp-relay=true", …]` replaces the layout-wide `proxyExtras` for that
+exit (`[]` = no extras — a shadow-tls exit is TCP-only). A `password` may be a consumer
+template (`${SERVER_PSK}:${USER_PSK}`) — the engine renders it verbatim, the consumer
+substitutes after the render; the engine never reads secrets.
+
 `memberOf` is the mesh-membership ruling and is required: **membership is data, never
 inferred from addresses.** A member of a mesh routes that mesh's space over its own path;
 a non-member detours through proxy groups. `"memberOf": {}` is a valid, explicit answer —

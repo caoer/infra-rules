@@ -43,7 +43,7 @@ import { HOST_SOURCE, type Host } from "../schema/host.ts";
 import type { ProxyExit } from "../schema/proxy-exit.ts";
 import type { Routing, RoutingCatchAll } from "../schema/routing.ts";
 import { orderRouting, resolveRoute } from "../schema/routing.ts";
-import type { Service } from "../schema/service.ts";
+import { isHostService, type Service } from "../schema/service.ts";
 import { ipToUint32 } from "../lib/cidr.ts";
 
 /**
@@ -221,7 +221,9 @@ interface ServiceAlias {
 
 /** Service dnsName → owner-subnet mesh IP. Overlay-sourced hosts are
  *  included: the member pin set is ssh-inventory only, but a declared
- *  service must still resolve. */
+ *  service must still resolve. Static-answer services are skipped — their
+ *  literal answers belong to `public`-scoped views, and a mesh view never
+ *  borrows a public value (schema/service.ts). */
 function serviceMeshAliases(entities: readonly Entity[], meshName: string): ServiceAlias[] {
   const hosts = new Map<string, Host>();
   for (const entity of entities) {
@@ -230,6 +232,7 @@ function serviceMeshAliases(entities: readonly Entity[], meshName: string): Serv
   const byDns = new Map<string, ServiceAlias>();
   const services = entities
     .filter((entity): entity is Service => entity.kind === "service")
+    .filter(isHostService)
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const service of services) {
     const host = hosts.get(service.host);
@@ -253,6 +256,32 @@ function serviceMeshAliases(entities: readonly Entity[], meshName: string): Serv
     }
   }
   return [...byDns.values()].sort((a, b) => (a.dnsName < b.dnsName ? -1 : 1));
+}
+
+/**
+ * One `[Proxy]` line. Shape: `name = ss, host, port, encrypt-method=…,
+ * password="…"[, shadow-tls-password="…", shadow-tls-sni=…, shadow-tls-version=3]
+ * [, extras…]`. Per-exit `extras` replace the layout-wide `proxyExtras`;
+ * absent, the layout string rides verbatim (byte parity with the
+ * predecessor generator, D19).
+ */
+export function proxyLine(exit: ProxyExit, layout: SurgeLayout): string {
+  const parts = [
+    `${exit.name} = ss`,
+    exit.host,
+    String(exit.port),
+    `encrypt-method=${exit.method}`,
+    `password="${exit.password}"`,
+  ];
+  if (exit.shadowTls !== undefined) {
+    parts.push(
+      `shadow-tls-password="${exit.shadowTls.password}"`,
+      `shadow-tls-sni=${exit.shadowTls.sni}`,
+      `shadow-tls-version=${exit.shadowTls.version}`,
+    );
+  }
+  parts.push(...(exit.extras ?? [layout.proxyExtras]));
+  return parts.join(", ");
 }
 
 export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRender {
@@ -404,10 +433,7 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
   lines.push("[Proxy]");
   lines.push("# Proxy exits: jumpers in region order, then spares");
   for (const exit of proxies) {
-    lines.push(
-      `${exit.name} = ss, ${exit.host}, ${exit.port}, encrypt-method=${exit.method}, ` +
-        `password="${exit.password}", ${layout.proxyExtras}`,
-    );
+    lines.push(proxyLine(exit, layout));
   }
   lines.push("");
 

@@ -26,7 +26,7 @@
     { "kind": "proxyExit", "name": "exit-east-1", "host": "192.0.2.10", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-east" },
     { "kind": "proxyExit", "name": "exit-west-1", "host": "192.0.2.11", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-west" },
     { "kind": "proxyExit", "name": "exit-north-1", "host": "192.0.2.12", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-north" },
-    { "kind": "proxyExit", "name": "exit-west-2", "host": "192.0.2.13", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-spare" },
+    { "kind": "proxyExit", "name": "exit-west-2", "host": "192.0.2.13", "port": 16228, "method": "fake-method-2022", "password": "fake-pw-spare", "shadowTls": { "password": "fake-stls-pw", "sni": "cdn.example.test", "version": 3 }, "extras": [] },
     { "kind": "routing", "entry": "intent", "name": "svc-names", "priority": 5, "match": { "match": "domain-suffix", "suffix": "svc.acme.test" }, "policy": "site-a" },
     { "kind": "routing", "entry": "intent", "name": "portal-name", "priority": 6, "match": { "match": "domain", "domain": "portal.acme.test" }, "policy": "mesh" },
     { "kind": "routing", "entry": "intent", "name": "site-a-lan", "priority": 10, "match": { "match": "cidr", "cidr": "198.51.100.0/25" }, "policy": "site-a" },
