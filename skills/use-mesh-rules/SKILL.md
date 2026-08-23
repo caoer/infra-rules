@@ -121,13 +121,41 @@ org DECLARED as services.
 |---|---|
 | peer host-backed services (`dnsName = easytier_ip`) | peer hosts as `<name><hostSuffix>` |
 | peer static-answer services (A verbatim, CNAME as a Surge `[Host]` alias) | proxy exits, `/32` pins |
-| — | routing intents, policies / policy groups |
+| one derived `DOMAIN` rule per peer name (v0.16.0) | routing intents, policies / policy groups |
 
 Routing authority stays in the consumer's OWN registry: a peer publish can
-add a name, never re-route the profile. Peer lines are emitted last under a
-`# Peer mesh: <name>` comment; a local name always wins, and a peer that
-would map an existing name to a DIFFERENT value is a hard failure (an
+add a name, never re-route the profile. Peer `[Host]` lines are emitted last
+under a `# Peer mesh: <name>` comment; a local name always wins, and a peer
+that would map an existing name to a DIFFERENT value is a hard failure (an
 identical value is silently deduped).
+
+**Resolving a peer name is only half of it — v0.16.0.** Every range rule the
+renderer emits carries `no-resolve`, so a request made BY NAME reaches none of
+them: the name resolves to a mesh address through `[Host]` and then leaves
+over `FINAL`. So each peer name also gets one `DOMAIN` rule, emitted after the
+own intents and above the always-last catch-alls, at the group **this
+profile's own rules** give that address — `groupForAddress` replays pins →
+intents → catch-alls in Surge's first-match order. Consequences:
+
+- The policy is never read from the peer. A per-site LAN name lands on that
+  site's group, a mesh-space name on the mesh group — the same answer the
+  address would have gotten had the request been made by IP.
+- A name whose address **no** rule of this profile's covers gets **no** rule
+  and falls to `FINAL` on purpose (a peer's public entry point is not this
+  profile's to route). Those names are listed in a comment, so the gap is
+  visible rather than inferred. A CNAME answer has no address to reason from
+  and is treated the same way.
+- An own `domain`/`domain-suffix` intent covering the name suppresses the
+  derived line — the intent sits above it and would make it a rule that never
+  fires.
+- Local service names get no such pass: their routing is declared in this
+  registry as a domain intent, which is the consumer's own authority.
+- `stats.peerRules` counts the derived rules; the CLI prints
+  `N peer names (M routed)`.
+
+A `[Host]` answer only reaches the proxy when the consumer profile sets
+`use-local-host-item-for-proxy = true`; otherwise Surge hands the NAME to the
+policy's proxy and the far end must resolve it.
 
 **A peer HOST contributes no magic-DNS line.** `<name><hostSuffix>` is a claim
 about THIS overlay's resolver; a foreign host has no entry in it, so

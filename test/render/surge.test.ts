@@ -119,6 +119,7 @@ describe("surge renderer — tier-1 (D19)", () => {
       hosts: 8,
       serviceNames: 0,
       peerNames: 0,
+      peerRules: 0,
     });
   });
 
@@ -339,6 +340,122 @@ describe("surge renderer — tier-1 (D19)", () => {
     expect(stats.pins).toBe(base.pins);
     expect(stats.intents).toBe(base.intents);
     expect(stats.hosts).toBe(base.hosts);
+  });
+
+  /**
+   * The peer fixture's addresses land outside every rule the surge fixture
+   * emits. A profile that carries a peer's names is one that routes the
+   * peer's space, so these intents are what makes the pairing realistic —
+   * and they are what the derived rules read their policy from.
+   */
+  function routingPeerSpace(registry: Registry): Registry {
+    return {
+      ...registry,
+      hand: [
+        ...registry.hand,
+        {
+          kind: "routing" as const,
+          entry: "intent" as const,
+          name: "peer-mesh-space",
+          priority: 70,
+          match: { match: "cidr" as const, cidr: "10.71.0.0/16" },
+          policy: "mesh",
+        },
+        {
+          kind: "routing" as const,
+          entry: "intent" as const,
+          name: "peer-lan-site",
+          priority: 71,
+          match: { match: "cidr" as const, cidr: "192.168.77.0/24" },
+          policy: "site-a",
+        },
+      ],
+    };
+  }
+
+  test("a peer name gets one DOMAIN rule at the policy its address already has", async () => {
+    const { registry, layout } = await loadInputs();
+    const { text, stats } = renderSurge(routingPeerSpace(registry), layout, [peerRegistry()]);
+
+    // Host-backed name → the mesh-space intent's group; static A → the LAN
+    // site's group. Neither policy is read from the peer: both come from
+    // this profile's own rule over that address.
+    expect(text).toContain("DOMAIN,svc.peer.example,PG_mesh");
+    expect(text).toContain("DOMAIN,lan.peer.example,PG_site_a");
+    // A CNAME answer has no address to reason from → no rule, documented.
+    expect(text).not.toContain("DOMAIN,edge.peer.example,");
+    expect(text).toContain("#   edge.peer.example  edge.public.example");
+    expect(stats.peerNames).toBe(3);
+    expect(stats.peerRules).toBe(2);
+  });
+
+  test("derived rules sit below the intents and above the always-last catch-alls", async () => {
+    const { registry, layout } = await loadInputs();
+    const { text } = renderSurge(routingPeerSpace(registry), layout, [peerRegistry()]);
+    const rules = text
+      .split("\n")
+      .filter((line) => /^(IP-CIDR|DOMAIN|DOMAIN-SUFFIX),/.test(line) && !line.includes("/32,"));
+    expect(rules).toEqual([
+      "DOMAIN-SUFFIX,svc.acme.test,PG_site_a",
+      "DOMAIN,portal.acme.test,PG_mesh",
+      "IP-CIDR,198.51.100.0/25,PG_site_a,no-resolve",
+      "IP-CIDR,10.99.5.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.98.32.0/24,PG_site_a,no-resolve",
+      "IP-CIDR,10.71.0.0/16,PG_mesh,no-resolve",
+      "IP-CIDR,192.168.77.0/24,PG_site_a,no-resolve",
+      // peer names, after every own intent, in the peer's own [Host] order…
+      "DOMAIN,lan.peer.example,PG_site_a",
+      "DOMAIN,svc.peer.example,PG_mesh",
+      // …and above the catch-alls, which stay last (D14)
+      "IP-CIDR,10.98.1.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.20.14.0/24,PG_mesh,no-resolve",
+      "IP-CIDR,10.98.0.0/17,PG_mesh,no-resolve",
+    ]);
+    // The rule precedes the [Host] answer it routes.
+    expect(text.indexOf("DOMAIN,svc.peer.example,PG_mesh")).toBeLessThan(
+      text.indexOf("svc.peer.example = 10.71.1.50"),
+    );
+  });
+
+  test("a peer name outside every rule of this profile's gets none, and is documented", async () => {
+    const { registry, layout } = await loadInputs();
+    // No intent covers the peer's space: resolving the name is all this
+    // profile can honestly do, so no rule is invented for it.
+    const { text, stats } = renderSurge(registry, layout, [peerRegistry()]);
+    expect(stats.peerNames).toBe(3);
+    expect(stats.peerRules).toBe(0);
+    expect(text).not.toContain("DOMAIN,svc.peer.example,");
+    expect(text).toContain("# No rule of this profile's covers these names' addresses → FINAL:");
+    expect(text).toContain("#   svc.peer.example  10.71.1.50");
+    expect(text).toContain("#   lan.peer.example  192.168.77.10");
+  });
+
+  test("an own domain intent covering the name suppresses the derived rule", async () => {
+    const { registry, layout } = await loadInputs();
+    const routed = routingPeerSpace(registry);
+    const covered: Registry = {
+      ...routed,
+      hand: [
+        ...routed.hand,
+        {
+          kind: "routing" as const,
+          entry: "intent" as const,
+          name: "peer-domains",
+          priority: 8,
+          match: { match: "domain-suffix" as const, suffix: "peer.example" },
+          policy: "site-a",
+        },
+      ],
+    };
+    const { text, stats } = renderSurge(covered, layout, [peerRegistry()]);
+    // This profile's own intent decides every peer.example name…
+    expect(text).toContain("DOMAIN-SUFFIX,peer.example,PG_site_a");
+    // …so no derived line is emitted below it — a rule that could never fire.
+    expect(text).not.toContain("DOMAIN,svc.peer.example,");
+    expect(text).not.toContain("DOMAIN,lan.peer.example,");
+    expect(stats.peerRules).toBe(0);
+    // The names still resolve.
+    expect(text).toContain("svc.peer.example = 10.71.1.50");
   });
 
   test("no peers renders byte-identically to the peerless call", async () => {

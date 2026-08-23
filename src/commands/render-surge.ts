@@ -41,7 +41,9 @@ export async function runRenderSurge(options: RenderSurgeOptions): Promise<numbe
       `(${stats.proxies} proxies, ${stats.pins} pins in ${stats.pinRegions} regions, ` +
       `${stats.unmapped} unmapped, ${stats.intents} intents, ${stats.catchAlls} catch-alls, ` +
       `${stats.hosts} hosts, ${stats.serviceNames} service names` +
-      (peers.length > 0 ? `, ${stats.peerNames} peer names from ${peers.length} peer(s)` : "") +
+      (peers.length > 0
+        ? `, ${stats.peerNames} peer names (${stats.peerRules} routed) from ${peers.length} peer(s)`
+        : "") +
       `)`,
   );
   return 0;

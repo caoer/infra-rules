@@ -15,18 +15,31 @@
  * past it, accepted by semantic parity with the hand rules it replaces.
  *
  * PEER REGISTRIES contribute the `[Host]` names another org DECLARED as
- * services, and nothing else. A profile that routes another org's mesh
- * space (a `routing` intent over their range) must also RESOLVE their
- * names, or Surge asks a public resolver, gets a public answer, and the
- * range rule never matches — the same failure the local service aliases
- * exist to close, one org over. The peer's own routing intent, policies,
- * proxy exits and pins are NOT read: this profile's routing authority stays
- * in its own registry, so a peer publish can add a name but can never
- * silently re-route this profile. A peer's HOSTS contribute no magic-DNS
- * line either — `<name><hostSuffix>` describes this overlay's resolver, and
- * a peer host has no entry in it. Peers are also why the two registries
- * stay separate files: copying a peer's hosts into this registry's hand
- * section is `[dup-entity]` at validate time (D4).
+ * services, plus one `DOMAIN` rule per name, and nothing else. A profile
+ * that routes another org's mesh space (a `routing` intent over their range)
+ * must also RESOLVE their names, or Surge asks a public resolver, gets a
+ * public answer, and the range rule never matches — the same failure the
+ * local service aliases exist to close, one org over. Resolving is only half
+ * of it: every range rule this profile emits carries `no-resolve`, so a
+ * request made BY NAME skips all of them and falls to `FINAL` — the peer
+ * name resolves to a mesh address and then leaves over the final policy.
+ * Each peer name therefore gets a `DOMAIN` rule at the group THIS profile's
+ * own rules give that address (pins → intents → catch-alls, Surge's own
+ * first-match order); a name whose address no rule of this profile's covers
+ * gets none, and falls to `FINAL` on purpose (a peer's public entry point is
+ * not this profile's to route). Local service names need no such pass: their
+ * routing is declared in this registry as a domain intent.
+ *
+ * The peer's own routing intent, policies, proxy exits and pins are NOT
+ * read: this profile's routing authority stays in its own registry, so a
+ * peer publish can add a name but can never silently re-route this profile —
+ * a derived rule carries the policy this profile already assigned that
+ * address, and a domain intent of this profile's covering the name suppresses
+ * the derived line entirely. A peer's HOSTS contribute no magic-DNS line
+ * either — `<name><hostSuffix>` describes this overlay's resolver, and a peer
+ * host has no entry in it. Peers are also why the two registries stay
+ * separate files: copying a peer's hosts into this registry's hand section is
+ * `[dup-entity]` at validate time (D4).
  *
  * NOT in the renderer registry (`render/index.ts`) on purpose: this artifact
  * carries proxy credentials, so it must never be emitted into the generic
@@ -58,7 +71,7 @@ import type { ProxyExit } from "../schema/proxy-exit.ts";
 import type { Routing, RoutingCatchAll } from "../schema/routing.ts";
 import { orderRouting, resolveRoute } from "../schema/routing.ts";
 import { isHostService, type Service } from "../schema/service.ts";
-import { ipToUint32 } from "../lib/cidr.ts";
+import { cidrContainsIp, ipToUint32 } from "../lib/cidr.ts";
 
 /**
  * Presentation contract for one rendered profile. All fields are required:
@@ -193,6 +206,10 @@ export interface SurgeStats {
   serviceNames: number;
   /** `[Host]` lines contributed by peer registries, across all peers. */
   peerNames: number;
+  /** `DOMAIN` rules derived for those peer names, across all peers. Lower
+   *  than `peerNames` whenever a peer name's address is outside every rule
+   *  this profile emits, or an own domain intent already covers the name. */
+  peerRules: number;
 }
 
 /** A rendered profile plus the counts the CLI reports. */
@@ -506,6 +523,132 @@ export function renderSurge(
     );
   }
 
+  // ── [Host] answers, resolved BEFORE the rules are emitted: member
+  // magic-DNS, then local service aliases, then each peer's declared names.
+  // Order is precedence — a local name always wins the line, and a peer that
+  // would change one is a hard failure. Silent precedence would let a peer's
+  // publish move this profile's traffic without a diff anyone reads. The set
+  // is built here rather than while emitting `[Host]` because the peer names
+  // also need a `DOMAIN` rule, and a rule cannot be written after the section
+  // it belongs to.
+  interface HostLine {
+    name: string;
+    value: string;
+  }
+  const hostAnswers = new Map<string, string>();
+  const memberLines: HostLine[] = [];
+  for (const member of [...members].sort(byIp)) {
+    const name = `${member.name}${layout.hostSuffix}`;
+    hostAnswers.set(name, member.easytier_ip);
+    memberLines.push({ name, value: member.easytier_ip });
+  }
+  const aliasLines: HostLine[] = [];
+  for (const alias of aliases) {
+    const existing = hostAnswers.get(alias.dnsName);
+    if (existing !== undefined && existing !== alias.ip) {
+      fail(
+        `service "${alias.service}" dnsName "${alias.dnsName}" collides with a member [Host] at ${existing}`,
+      );
+    }
+    if (existing !== undefined) continue;
+    hostAnswers.set(alias.dnsName, alias.ip);
+    aliasLines.push({ name: alias.dnsName, value: alias.ip });
+  }
+  interface PeerBlock {
+    mesh: string;
+    lines: HostLine[];
+  }
+  const peerBlocks: PeerBlock[] = [];
+  for (const peer of peers) {
+    const { mesh: peerMesh, names } = peerNames(peer);
+    const emitted: HostLine[] = [];
+    for (const entry of names) {
+      const existing = hostAnswers.get(entry.name);
+      if (existing !== undefined && existing !== entry.value) {
+        fail(
+          `peer mesh "${peerMesh}" ${entry.origin} maps "${entry.name}" to ${entry.value}, ` +
+            `but this profile already maps it to ${existing} — ` +
+            `one name cannot carry two answers in [Host]`,
+        );
+      }
+      if (existing !== undefined) continue;
+      hostAnswers.set(entry.name, entry.value);
+      emitted.push({ name: entry.name, value: entry.value });
+    }
+    if (emitted.length > 0) peerBlocks.push({ mesh: peerMesh, lines: emitted });
+  }
+  const peerCount = peerBlocks.reduce((total, block) => total + block.lines.length, 0);
+
+  // ── peer name rules: the routing half of a peer name. `groupForAddress`
+  // replays THIS profile's own rules in Surge's first-match order over an
+  // address — the answer a `[Host]` line hands back — and returns the group
+  // that would win. `undefined` means no rule of this profile's covers the
+  // address, so the name gets no rule and falls to FINAL, which is the
+  // correct answer for a peer's public entry point.
+  const groupForAddress = (ip: string): string | undefined => {
+    for (const pin of pins) {
+      if (pin.easytier_ip === ip) return pinGroupFor(pin);
+    }
+    for (const entry of intents) {
+      if (entry.match.match === "cidr" && cidrContainsIp(entry.match.cidr, ip)) {
+        return intentGroup(entry);
+      }
+    }
+    for (const entry of catchAlls) {
+      if (cidrContainsIp(entry.match.cidr, ip)) {
+        return group(entry.policy, `catch-all "${entry.name}"`);
+      }
+    }
+    return undefined;
+  };
+  // A `[Host]` value is an address (route it) or another name (a CNAME the
+  // peer kept — this profile has no address to reason from, so no rule).
+  const isIpv4 = (value: string): boolean => {
+    try {
+      ipToUint32(value);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // An own domain intent already decides the name, and sits above the derived
+  // block: emitting a second line would be a rule that never fires.
+  const domainIntentCovers = (name: string): boolean =>
+    intents.some((entry) => {
+      switch (entry.match.match) {
+        case "domain":
+          return entry.match.domain === name;
+        case "domain-suffix":
+          return name === entry.match.suffix || name.endsWith(`.${entry.match.suffix}`);
+        case "cidr":
+          return false;
+      }
+    });
+  interface PeerRuleBlock {
+    mesh: string;
+    rules: string[];
+    /** Names left to FINAL, documented so the gap is visible, not inferred. */
+    unrouted: HostLine[];
+  }
+  const peerRuleBlocks: PeerRuleBlock[] = [];
+  for (const block of peerBlocks) {
+    const rules: string[] = [];
+    const unrouted: HostLine[] = [];
+    for (const line of block.lines) {
+      if (domainIntentCovers(line.name)) continue;
+      const groupName = isIpv4(line.value) ? groupForAddress(line.value) : undefined;
+      if (groupName === undefined) {
+        unrouted.push(line);
+        continue;
+      }
+      rules.push(`DOMAIN,${line.name},${groupName}`);
+    }
+    if (rules.length > 0 || unrouted.length > 0) {
+      peerRuleBlocks.push({ mesh: block.mesh, rules, unrouted });
+    }
+  }
+  const peerRuleCount = peerRuleBlocks.reduce((total, block) => total + block.rules.length, 0);
+
   // ── emit — layout mirrors the predecessor generator line-for-line, so the
   // comment-stripped byte-diff (D19) compares structurally identical bodies.
   const lines: string[] = [];
@@ -557,6 +700,22 @@ export function renderSurge(
     lines.push("");
   }
 
+  for (const block of peerRuleBlocks) {
+    lines.push(
+      `# Peer mesh: ${block.mesh} — one rule per resolved name, at the policy this`,
+      "# profile's own rules give that address. Every range rule carries no-resolve,",
+      "# so a request made by NAME reaches none of them without these lines.",
+    );
+    lines.push(...block.rules);
+    if (block.unrouted.length > 0) {
+      lines.push("# No rule of this profile's covers these names' addresses → FINAL:");
+      for (const line of block.unrouted) {
+        lines.push(`#   ${line.name}  ${line.value}`);
+      }
+    }
+    lines.push("");
+  }
+
   lines.push("# Mesh catch-all ranges — always after the per-host pins (Surge [Rule] is first-match)");
   catchAlls.forEach((entry, index) => {
     if (catchAlls.length > 1 && index === catchAlls.length - 1) {
@@ -570,52 +729,22 @@ export function renderSurge(
 
   lines.push("[Host]");
   lines.push(`# Mesh magic-DNS parity (<name>${layout.hostSuffix} → mesh IP)`);
-  const memberHostNames = new Map<string, string>();
-  for (const member of [...members].sort(byIp)) {
-    const name = `${member.name}${layout.hostSuffix}`;
-    memberHostNames.set(name, member.easytier_ip);
-    lines.push(`${name} = ${member.easytier_ip}`);
+  for (const line of memberLines) {
+    lines.push(`${line.name} = ${line.value}`);
   }
-  if (aliases.length > 0) {
+  if (aliasLines.length > 0) {
     lines.push("# Service DNS names → owner-subnet mesh IP");
-    for (const alias of aliases) {
-      const existing = memberHostNames.get(alias.dnsName);
-      if (existing !== undefined && existing !== alias.ip) {
-        fail(
-          `service "${alias.service}" dnsName "${alias.dnsName}" collides with a member [Host] at ${existing}`,
-        );
-      }
-      if (existing !== undefined) continue;
-      memberHostNames.set(alias.dnsName, alias.ip);
-      lines.push(`${alias.dnsName} = ${alias.ip}`);
+    for (const line of aliasLines) {
+      lines.push(`${line.name} = ${line.value}`);
     }
   }
-  // Peers last: a local name always wins the line, and a peer that would
-  // change one is a hard failure. Silent precedence would let a peer's
-  // publish move this profile's traffic without a diff anyone reads.
-  let peerCount = 0;
-  for (const peer of peers) {
-    const { mesh: peerMesh, names } = peerNames(peer);
-    const emitted: string[] = [];
-    for (const entry of names) {
-      const existing = memberHostNames.get(entry.name);
-      if (existing !== undefined && existing !== entry.value) {
-        fail(
-          `peer mesh "${peerMesh}" ${entry.origin} maps "${entry.name}" to ${entry.value}, ` +
-            `but this profile already maps it to ${existing} — ` +
-            `one name cannot carry two answers in [Host]`,
-        );
-      }
-      if (existing !== undefined) continue;
-      memberHostNames.set(entry.name, entry.value);
-      emitted.push(`${entry.name} = ${entry.value}`);
-    }
-    if (emitted.length === 0) continue;
+  for (const block of peerBlocks) {
     lines.push(
-      `# Peer mesh: ${peerMesh} — declared service names, routed by this profile's own intents`,
+      `# Peer mesh: ${block.mesh} — declared service names, routed by the peer rules above`,
     );
-    lines.push(...emitted);
-    peerCount += emitted.length;
+    for (const line of block.lines) {
+      lines.push(`${line.name} = ${line.value}`);
+    }
   }
   lines.push("");
 
@@ -631,6 +760,7 @@ export function renderSurge(
       hosts: members.length,
       serviceNames: aliases.length,
       peerNames: peerCount,
+      peerRules: peerRuleCount,
     },
   };
 }
