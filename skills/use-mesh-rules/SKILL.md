@@ -92,7 +92,22 @@ SKILL.local.md carries the new pin (and new counts only if the delta is proven i
 
 `render-surge` takes a layout JSON kept in the consumer repo — the consumer's own
 declaration: region order, jumpers, spares, proxy extras, host suffix, policy-group names,
-pin policy, and `memberOf`.
+pin policy, per-region and per-host pin-policy overrides, and `memberOf`.
+
+`pinPolicy` is the default registry policy every `/32` pin routes to.
+`pinPolicyByRegion` is the per-region override and is required: **pin-group
+membership is data, never inferred from the region name.** `"pinPolicyByRegion": {}`
+is a valid, explicit answer — every pin uses `pinPolicy`. Keys must be in
+`regionOrder`; values resolve through `policyGroups` like `pinPolicy`.
+`pinPolicyByHost` is the per-host override, also required, and beats the
+region default. `"pinPolicyByHost": {}` means no host overrides. Keys must
+name a pinned host; unknown or unmapped names refuse.
+
+`[Host]` carries two sets: ssh-inventory members as `<name><hostSuffix>`,
+then every registry service whose host has an address on the owner-subnet
+mesh (`dnsName = easytier_ip`). Overlay-sourced hosts stay out of the pin
+set but their services still resolve — otherwise Surge falls through to a
+wildcard resolver and the `/32` pin never matches.
 
 `memberOf` is the mesh-membership ruling and is required: **membership is data, never
 inferred from addresses.** A member of a mesh routes that mesh's space over its own path;

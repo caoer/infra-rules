@@ -29,7 +29,7 @@ export async function runRenderSurge(options: RenderSurgeOptions): Promise<numbe
     `rendered surge dconf to ${options.outPath} ` +
       `(${stats.proxies} proxies, ${stats.pins} pins in ${stats.pinRegions} regions, ` +
       `${stats.unmapped} unmapped, ${stats.intents} intents, ${stats.catchAlls} catch-alls, ` +
-      `${stats.hosts} hosts)`,
+      `${stats.hosts} hosts, ${stats.serviceNames} service names)`,
   );
   return 0;
 }

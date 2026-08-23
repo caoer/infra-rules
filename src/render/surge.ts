@@ -5,7 +5,11 @@
  * from proxyExit entities, per-host `/32` pins grouped by region, the
  * membership-resolved routing intents (site ranges, LAN sites, domains), the
  * always-last catch-all ranges (D14), and a `[Host]` block mirroring the
- * overlay's magic DNS (`<name><hostSuffix>`). The output replaces a hand-rolled
+ * overlay's magic DNS (`<name><hostSuffix>`) plus every service whose host
+ * has an address on that overlay (`dnsName → easytier_ip`). Service aliases
+ * are not restricted to ssh-inventory: a declared service on a mesh-overlay
+ * host must still resolve, or Surge falls through to a wildcard resolver
+ * and the /32 pin never matches. The output replaces a hand-rolled
  * per-fleet generator; its acceptance was byte-parity with that generator's
  * artifact (D19) — the intents section is the first deliberate content change
  * past it, accepted by semantic parity with the hand rules it replaces.
@@ -39,6 +43,7 @@ import { HOST_SOURCE, type Host } from "../schema/host.ts";
 import type { ProxyExit } from "../schema/proxy-exit.ts";
 import type { Routing, RoutingCatchAll } from "../schema/routing.ts";
 import { orderRouting, resolveRoute } from "../schema/routing.ts";
+import type { Service } from "../schema/service.ts";
 import { ipToUint32 } from "../lib/cidr.ts";
 
 /**
@@ -61,8 +66,24 @@ export const SurgeLayoutSchema = z
     hostSuffix: z.string().min(2).startsWith("."),
     /** registry policy name → Surge policy-group name. */
     policyGroups: z.record(z.string().min(1), z.string().min(1)),
-    /** Registry policy the `/32` pins route to. */
+    /** Registry policy the `/32` pins route to, unless a region or host
+     *  override names another policy. */
     pinPolicy: z.string().min(1),
+    /**
+     * Region → registry policy for that region's `/32` pins. Pin-group
+     * membership is layout data, never inferred from the region name.
+     * `{}` is the explicit answer "every pin uses pinPolicy". Keys must
+     * be in regionOrder; unknown keys refuse. Values resolve through
+     * policyGroups at render time, same as pinPolicy.
+     */
+    pinPolicyByRegion: z.record(z.string().min(1), z.string().min(1)),
+    /**
+     * Host name → registry policy for that host's `/32` pin. Beats
+     * pinPolicyByRegion. `{}` is the explicit answer "no host overrides".
+     * Keys must name a pinned ssh-inventory mesh host — unknown or
+     * unmapped names refuse at render time, never silently drop.
+     */
+    pinPolicyByHost: z.record(z.string().min(1), z.string().min(1)),
     /**
      * Mesh entity name → Surge policy group of this profile's direct path
      * into that overlay. Membership is EXPLICIT and first-class: `{}`
@@ -94,6 +115,15 @@ export const SurgeLayoutSchema = z
           code: "custom",
           path: ["jumpers"],
           message: `jumper region "${region}" is not in regionOrder`,
+        });
+      }
+    }
+    for (const region of Object.keys(layout.pinPolicyByRegion)) {
+      if (!regions.has(region)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["pinPolicyByRegion", region],
+          message: `pinPolicyByRegion region "${region}" is not in regionOrder`,
         });
       }
     }
@@ -146,6 +176,7 @@ export interface SurgeStats {
   intents: number;
   catchAlls: number;
   hosts: number;
+  serviceNames: number;
 }
 
 /** A rendered profile plus the counts the CLI reports. */
@@ -182,6 +213,48 @@ type Member = Host & { easytier_ip: string };
 
 const byIp = (a: Member, b: Member): number => ipToUint32(a.easytier_ip) - ipToUint32(b.easytier_ip);
 
+interface ServiceAlias {
+  dnsName: string;
+  ip: string;
+  service: string;
+}
+
+/** Service dnsName → owner-subnet mesh IP. Overlay-sourced hosts are
+ *  included: the member pin set is ssh-inventory only, but a declared
+ *  service must still resolve. */
+function serviceMeshAliases(entities: readonly Entity[], meshName: string): ServiceAlias[] {
+  const hosts = new Map<string, Host>();
+  for (const entity of entities) {
+    if (entity.kind === "host" && !hosts.has(entity.name)) hosts.set(entity.name, entity);
+  }
+  const byDns = new Map<string, ServiceAlias>();
+  const services = entities
+    .filter((entity): entity is Service => entity.kind === "service")
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const service of services) {
+    const host = hosts.get(service.host);
+    if (host === undefined) {
+      fail(`service "${service.name}" references undeclared host "${service.host}"`);
+    }
+    if (host.mesh !== meshName || host.easytier_ip === undefined) continue;
+    const existing = byDns.get(service.dnsName);
+    if (existing !== undefined && existing.ip !== host.easytier_ip) {
+      fail(
+        `services "${existing.service}" and "${service.name}" both claim "${service.dnsName}" ` +
+          `at different mesh IPs (${existing.ip} vs ${host.easytier_ip})`,
+      );
+    }
+    if (existing === undefined) {
+      byDns.set(service.dnsName, {
+        dnsName: service.dnsName,
+        ip: host.easytier_ip,
+        service: service.name,
+      });
+    }
+  }
+  return [...byDns.values()].sort((a, b) => (a.dnsName < b.dnsName ? -1 : 1));
+}
+
 export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRender {
   const entities = allEntities(registry);
   const mesh = ownerSubnetMesh(entities);
@@ -193,6 +266,7 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
       entity.mesh === mesh.name &&
       entity.easytier_ip !== undefined,
   );
+  const aliases = serviceMeshAliases(entities, mesh.name);
   if (members.length === 0) {
     fail(
       `no hosts matched mesh "${mesh.name}" with source "${HOST_SOURCE.sshInventory}" — ` +
@@ -208,7 +282,19 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
     }
     return groupName;
   };
-  const pinGroup = group(layout.pinPolicy, "pinPolicy");
+  // pinPolicy must resolve even when every region/host overrides it — a
+  // layout that names a missing default is still incomplete.
+  const defaultPinGroup = group(layout.pinPolicy, "pinPolicy");
+  const pinGroupForRegion = (region: string): string => {
+    const override = layout.pinPolicyByRegion[region];
+    if (override === undefined) return defaultPinGroup;
+    return group(override, `pinPolicyByRegion "${region}"`);
+  };
+  const pinGroupFor = (member: Member): string => {
+    const byHost = layout.pinPolicyByHost[member.name];
+    if (byHost !== undefined) return group(byHost, `pinPolicyByHost "${member.name}"`);
+    return member.region !== undefined ? pinGroupForRegion(member.region) : defaultPinGroup;
+  };
 
   // ── proxies: jumpers in region order, then spares — every exit accounted for
   const exits = new Map<string, ProxyExit>(
@@ -239,6 +325,22 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
   const unmapped = members
     .filter((member) => member.region === undefined || !regionRank.has(member.region))
     .sort(byIp);
+  const pinnedByName = new Map(pins.map((pin) => [pin.name, pin]));
+  const memberByName = new Map(members.map((member) => [member.name, member]));
+  for (const name of Object.keys(layout.pinPolicyByHost).sort()) {
+    if (!memberByName.has(name)) {
+      fail(
+        `pinPolicyByHost "${name}" names no ssh-inventory mesh host — ` +
+          `a typo would silently leave the pin on the region/default group`,
+      );
+    }
+    if (!pinnedByName.has(name)) {
+      fail(
+        `pinPolicyByHost "${name}" is not a pinned host (region unset or unlisted) — ` +
+          `the override would never emit`,
+      );
+    }
+  }
 
   // ── routing intents: every `entry:"intent"` entity, membership-resolved.
   // The registry keeps intents abstract (range → policy); THIS profile's
@@ -311,16 +413,19 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
 
   lines.push("[Rule]");
   lines.push(
-    `# Per-host /32 pins grouped by region (restore documentation); pins route via ${pinGroup}`,
+    `# Per-host /32 pins grouped by region (restore documentation); default pin policy ${defaultPinGroup}`,
   );
   lines.push("");
 
   for (const region of layout.regionOrder) {
     const regionPins = pins.filter((pin) => pin.region === region);
     if (regionPins.length === 0) continue;
-    lines.push(`# ${region.toUpperCase()} (jumper on restore: ${layout.jumpers[region]!})`);
+    const regionPinGroup = pinGroupForRegion(region);
+    lines.push(
+      `# ${region.toUpperCase()} (jumper on restore: ${layout.jumpers[region]!}; pins via ${regionPinGroup})`,
+    );
     for (const pin of regionPins) {
-      lines.push(`IP-CIDR,${pin.easytier_ip}/32,${pinGroup},no-resolve // ${pin.name}`);
+      lines.push(`IP-CIDR,${pin.easytier_ip}/32,${pinGroupFor(pin)},no-resolve // ${pin.name}`);
     }
     lines.push("");
   }
@@ -356,8 +461,24 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
 
   lines.push("[Host]");
   lines.push(`# Mesh magic-DNS parity (<name>${layout.hostSuffix} → mesh IP)`);
+  const memberHostNames = new Map<string, string>();
   for (const member of [...members].sort(byIp)) {
-    lines.push(`${member.name}${layout.hostSuffix} = ${member.easytier_ip}`);
+    const name = `${member.name}${layout.hostSuffix}`;
+    memberHostNames.set(name, member.easytier_ip);
+    lines.push(`${name} = ${member.easytier_ip}`);
+  }
+  if (aliases.length > 0) {
+    lines.push("# Service DNS names → owner-subnet mesh IP");
+    for (const alias of aliases) {
+      const existing = memberHostNames.get(alias.dnsName);
+      if (existing !== undefined && existing !== alias.ip) {
+        fail(
+          `service "${alias.service}" dnsName "${alias.dnsName}" collides with a member [Host] at ${existing}`,
+        );
+      }
+      if (existing !== undefined) continue;
+      lines.push(`${alias.dnsName} = ${alias.ip}`);
+    }
   }
   lines.push("");
 
@@ -371,6 +492,7 @@ export function renderSurge(registry: Registry, layout: SurgeLayout): SurgeRende
       intents: intents.length,
       catchAlls: catchAlls.length,
       hosts: members.length,
+      serviceNames: aliases.length,
     },
   };
 }

@@ -49,6 +49,7 @@ describe("surge renderer — tier-1 (D19)", () => {
       intents: 5,
       catchAlls: 3,
       hosts: 8,
+      serviceNames: 0,
     });
   });
 
@@ -146,6 +147,129 @@ describe("surge renderer — tier-1 (D19)", () => {
     ]);
   });
 
+  test("pinPolicyByRegion overrides only the named region's pins", async () => {
+    const { registry, layout } = await loadInputs();
+    const split: SurgeLayout = { ...layout, pinPolicyByRegion: { east: "site-a" } };
+    const { text } = renderSurge(registry, split);
+    // east pins follow the override…
+    expect(text).toContain("IP-CIDR,10.98.1.3/32,PG_site_a,no-resolve // pin-e1");
+    expect(text).toContain("IP-CIDR,10.98.1.20/32,PG_site_a,no-resolve // pin-e2");
+    // …west pins stay on pinPolicy.
+    expect(text).toContain("IP-CIDR,10.98.1.1/32,PG_mesh,no-resolve // pin-w1");
+    expect(text).toContain("IP-CIDR,10.98.2.9/32,PG_mesh,no-resolve // pin-w2");
+    expect(text).toContain("IP-CIDR,10.98.10.49/32,PG_mesh,no-resolve // pin-w3");
+  });
+
+  test("pinPolicyByRegion naming an unmapped policy throws", async () => {
+    const { registry, layout } = await loadInputs();
+    const bad: SurgeLayout = { ...layout, pinPolicyByRegion: { east: "no-such-policy" } };
+    expect(() => renderSurge(registry, bad)).toThrow(
+      /pinPolicyByRegion "east": policy "no-such-policy" has no policyGroups mapping/,
+    );
+  });
+
+  test("pinPolicyByHost beats pinPolicyByRegion for the named pin only", async () => {
+    const { registry, layout } = await loadInputs();
+    const split: SurgeLayout = {
+      ...layout,
+      pinPolicyByRegion: { east: "site-a" },
+      pinPolicyByHost: { "pin-e1": "mesh" },
+    };
+    const { text } = renderSurge(registry, split);
+    expect(text).toContain("IP-CIDR,10.98.1.3/32,PG_mesh,no-resolve // pin-e1");
+    expect(text).toContain("IP-CIDR,10.98.1.20/32,PG_site_a,no-resolve // pin-e2");
+    expect(text).toContain("IP-CIDR,10.98.1.1/32,PG_mesh,no-resolve // pin-w1");
+  });
+
+  test("pinPolicyByHost naming an unknown host throws", async () => {
+    const { registry, layout } = await loadInputs();
+    const bad: SurgeLayout = { ...layout, pinPolicyByHost: { "no-such-host": "mesh" } };
+    expect(() => renderSurge(registry, bad)).toThrow(/pinPolicyByHost "no-such-host" names no/);
+  });
+
+  test("pinPolicyByHost naming an unmapped host throws", async () => {
+    const { registry, layout } = await loadInputs();
+    const bad: SurgeLayout = { ...layout, pinPolicyByHost: { "um-a": "mesh" } };
+    expect(() => renderSurge(registry, bad)).toThrow(/pinPolicyByHost "um-a" is not a pinned host/);
+  });
+
+  test("pinPolicyByHost naming an unmapped policy throws", async () => {
+    const { registry, layout } = await loadInputs();
+    const bad: SurgeLayout = { ...layout, pinPolicyByHost: { "pin-e1": "no-such-policy" } };
+    expect(() => renderSurge(registry, bad)).toThrow(
+      /pinPolicyByHost "pin-e1": policy "no-such-policy" has no policyGroups mapping/,
+    );
+  });
+
+  test("service dnsNames emit [Host] aliases, including mesh-overlay hosts", async () => {
+    const { registry, layout } = await loadInputs();
+    const withServices: Registry = {
+      ...registry,
+      hand: [
+        ...registry.hand,
+        {
+          kind: "service" as const,
+          name: "portal-svc",
+          dnsName: "portal.acme.test",
+          host: "pin-e1",
+        },
+        {
+          kind: "service" as const,
+          name: "ghost-svc",
+          dnsName: "ghost.acme.test",
+          host: "ghost-1",
+        },
+        {
+          kind: "service" as const,
+          name: "lan-only",
+          dnsName: "lan-only.acme.test",
+          host: "z-missing-mesh",
+        },
+      ],
+      snapshots: {
+        ...registry.snapshots,
+        testorg: [
+          ...registry.snapshots["testorg"]!,
+          { kind: "host" as const, name: "z-missing-mesh" },
+        ],
+      },
+    };
+    const { text, stats } = renderSurge(withServices, layout);
+    expect(stats.serviceNames).toBe(2);
+    expect(text).toContain("portal.acme.test = 10.98.1.3");
+    expect(text).toContain("ghost.acme.test = 10.98.1.100");
+    expect(text).not.toContain("lan-only.acme.test");
+    // overlay host still has no member pin / magic-DNS line
+    expect(text).not.toContain("ghost-1.mesh.test");
+  });
+
+  test("service referencing an undeclared host throws", async () => {
+    const { registry, layout } = await loadInputs();
+    const dangling: Registry = {
+      ...registry,
+      hand: [
+        ...registry.hand,
+        { kind: "service" as const, name: "orphan", dnsName: "orphan.acme.test", host: "no-such-host" },
+      ],
+    };
+    expect(() => renderSurge(dangling, layout)).toThrow(
+      /service "orphan" references undeclared host "no-such-host"/,
+    );
+  });
+
+  test("two services claiming one dnsName at different IPs throws", async () => {
+    const { registry, layout } = await loadInputs();
+    const clash: Registry = {
+      ...registry,
+      hand: [
+        ...registry.hand,
+        { kind: "service" as const, name: "a", dnsName: "shared.acme.test", host: "pin-e1" },
+        { kind: "service" as const, name: "b", dnsName: "shared.acme.test", host: "pin-w1" },
+      ],
+    };
+    expect(() => renderSurge(clash, layout)).toThrow(/both claim "shared.acme.test"/);
+  });
+
   test("credentials appear in the full render but never survive the strip", async () => {
     const { registry, layout } = await loadInputs();
     const { text } = renderSurge(registry, layout);
@@ -206,6 +330,8 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      pinPolicyByRegion: {},
+      pinPolicyByHost: {},
       memberOf: {},
     };
     expect(SurgeLayoutSchema.safeParse(base).success).toBe(false); // jumper doubles as spare
@@ -224,6 +350,8 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      pinPolicyByRegion: {},
+      pinPolicyByHost: {},
       memberOf: {},
       catchAlls: ["core-band"],
     };
@@ -240,6 +368,8 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      pinPolicyByRegion: {},
+      pinPolicyByHost: {},
       memberOf: {},
     };
     const parsed = SurgeLayoutSchema.safeParse(shared);
@@ -259,9 +389,31 @@ describe("surge renderer — loud failures", () => {
       hostSuffix: ".x.test",
       policyGroups: { mesh: "PG_mesh" },
       pinPolicy: "mesh",
+      pinPolicyByRegion: {},
+      pinPolicyByHost: {},
       memberOf: {},
     };
     expect(SurgeLayoutSchema.safeParse(doubled).success).toBe(false);
+  });
+
+  test("layout schema rejects pinPolicyByRegion keys outside regionOrder", () => {
+    const base = {
+      regionOrder: ["east"],
+      jumpers: { east: "exit-east-1" },
+      spares: [],
+      proxyExtras: "tfo=true",
+      hostSuffix: ".x.test",
+      policyGroups: { mesh: "PG_mesh" },
+      pinPolicy: "mesh",
+      pinPolicyByRegion: { west: "mesh" },
+      pinPolicyByHost: {},
+      memberOf: {},
+    };
+    const parsed = SurgeLayoutSchema.safeParse(base);
+    expect(parsed.success).toBe(false);
+    const message = parsed.success ? "" : parsed.error.issues.map((issue) => issue.message).join("\n");
+    expect(message).toContain("west");
+    expect(message).toContain("regionOrder");
   });
 });
 

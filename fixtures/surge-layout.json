@@ -6,5 +6,7 @@
   "hostSuffix": ".mesh.test",
   "policyGroups": { "mesh": "PG_mesh", "site-a": "PG_site_a" },
   "pinPolicy": "mesh",
+  "pinPolicyByRegion": {},
+  "pinPolicyByHost": {},
   "memberOf": {}
 }
